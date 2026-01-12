@@ -1,0 +1,18 @@
+{
+  "name": "billing-tool-js",
+  "version": "1.0.0",
+  "private": true,
+  "description": "JavaScript (ES6) reimplementation of the BillingTool app",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "ejs": "^3.1.9",
+    "express": "^4.19.2",
+    "express-session": "^1.17.3",
+    "pdfkit": "^0.15.0",
+    "sql.js": "^1.10.2"
+  }
+}

@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Shift Grid</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 1100px; margin:0 auto; padding:20px; background:#f3f7fb; }
+        .card { background:#fff; padding:15px 20px; margin:15px 0; border-radius:8px; box-shadow:0 2px 4px rgba(0,0,0,0.08); }
+        table { width:100%; border-collapse:collapse; }
+        th, td { border:1px solid #ddd; padding:6px; text-align:center; }
+        th { background:#e8eef4; }
+        select { width:100%; }
+        .topbar { display:flex; justify-content:space-between; align-items:center; }
+        .muted { opacity:0.7; font-style:italic; }
+        .divider { margin:12px 0; border-bottom:1px solid #ddd; }
+        button { padding:8px 12px; border:none; border-radius:4px; background:#1976d2; color:#fff; cursor:pointer; }
+        input[type="date"] { padding:6px; }
+        .locked-cell { background: #f0f3f7; opacity: 0.7; }
+    </style>
+</head>
+<body>
+    <div class="topbar">
+        <div>
+            <strong>Shift Grid</strong> &mdash; Dr. <%= shiftDoctor.name %>
+        </div>
+        <div>
+            <a href="/?view=active" data-save-grid="true">Back to Patients</a>
+            <span style="margin:0 8px;">|</span>
+            <a href="/doctors/manage" data-save-grid="true">Manage Doctors</a>
+        </div>
+    </div>
+    <% if (is_read_only) { %>
+    <div class="card">
+        <p class="muted">Viewing a previous shift grid. This view is read-only.</p>
+    </div>
+    <% } %>
+
+    <div class="card">
+        <p class="muted">Fill 15-minute slots. Leave blank if no patient was attended.</p>
+        <div class="muted">Shift window: <%= format_display_24(new Date(shiftWindow.start_datetime)) %> to <%= format_display_24(new Date(shiftWindow.end_datetime)) %></div>
+        <form id="grid-form" method="post" action="/shift_grid">
+            <% segments.forEach((segment) => { %>
+            <h4 style="margin-bottom:6px;"><%= segment.date.toLocaleString('en-US', { month: 'short', day: '2-digit', year: 'numeric' }) %></h4>
+            <table>
+                <tr><th>Hour</th><th>00</th><th>15</th><th>30</th><th>45</th></tr>
+                <% for (let row = 0; row < Math.ceil(segment.slots.length / 4); row += 1) { %>
+                <tr>
+                    <% const base = row * 4; %>
+                    <% const hourSlot = segment.slots[base] || null; %>
+                    <th><% if (hourSlot) { %><%= hourSlot.toLocaleString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }).split(':')[0] %>:00<% } %></th>
+                    <% for (let offset = 0; offset < 4; offset += 1) { %>
+                        <% const idx = base + offset; %>
+                        <% const slotTime = segment.slots[idx] || null; %>
+                        <% if (slotTime) { %>
+                        <% const slotKey = format_local(slotTime); %>
+                        <% const slotObj = existing[slotKey]; %>
+                        <% const existingPatient = slotObj ? slotObj.patient_id : null; %>
+                        <% const existingAction = slotObj ? slotObj.action : ''; %>
+                        <% const existingDelivery = slotObj ? slotObj.delivery_by : ''; %>
+                        <% const isLocked = slotObj && slotObj.locked === 1; %>
+                        <% const hasCommittedAction = existingPatient && existingAction; %>
+                        <td data-locked="<%= isLocked ? '1' : '0' %>" data-slot-time="<%= slotKey %>" class="<%= (is_read_only || isLocked) ? 'locked-cell' : '' %>">
+                            <div class="slot-time" style="font-size:0.8em; margin-bottom:4px;"><%= slotTime.toLocaleString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }) %></div>
+                            <select class="patient-select" name="slot_patient_<%= Math.floor(slotTime.getTime() / 1000) %>" onchange="saveGrid(); applyCellState(this.closest('td'));" <%= (isLocked || is_read_only) ? 'disabled' : '' %>>
+                                <option value="" <%= !existingPatient ? 'selected' : '' %>>--</option>
+                                <% active_patients.forEach((p) => { %>
+                                <% if (p.status !== 'active' && existingPatient !== p.id) { return; } %>
+                                <option value="<%= p.id %>"
+                                        data-status="<%= p.care_status %>"
+                                        data-triage-start="<%= p.start_datetime || '' %>"
+                                        data-admitted-at="<%= p.care_admitted_at || '' %>"
+                                        data-delivered-at="<%= p.care_delivered_at || '' %>"
+                                        data-discharged-at="<%= p.discharge_datetime || '' %>"
+                                        <%= p.status !== 'active' ? 'disabled' : '' %>
+                                        <%= existingPatient === p.id ? 'selected' : '' %>>
+                                    <%= p.initials %> (<%= p.identifier %>)<%= p.status !== 'active' ? ' - archived' : '' %>
+                                </option>
+                                <% }) %>
+                            </select>
+                            <select class="action-select" name="slot_action_<%= Math.floor(slotTime.getTime() / 1000) %>" onchange="applyCellState(this.closest('td')); saveGrid();" <%= (isLocked || is_read_only) ? 'disabled' : '' %>>
+                                <option value="" <%= !existingAction ? 'selected' : '' %>>--</option>
+                                <option value="attended" <%= existingAction === 'attended' ? 'selected' : '' %>>Attended</option>
+                                <option value="delivery" <%= existingAction === 'delivery' ? 'selected' : '' %>>Delivery</option>
+                            </select>
+                            <select class="delivery-select" name="slot_delivery_<%= Math.floor(slotTime.getTime() / 1000) %>" onchange="saveGrid()" <%= existingAction !== 'delivery' ? 'disabled style="display:none;"' : 'style="display:block;"' %> <%= (isLocked || is_read_only) ? 'disabled' : '' %>>
+                                <option value="" <%= !existingDelivery ? 'selected' : '' %>>--</option>
+                                <option value="doctor" <%= existingDelivery === 'doctor' ? 'selected' : '' %>>Doctor</option>
+                                <option value="ob" <%= existingDelivery === 'ob' ? 'selected' : '' %>>OB</option>
+                            </select>
+                            <input class="delivery-time" type="datetime-local" name="slot_delivery_time_<%= Math.floor(slotTime.getTime() / 1000) %>"
+                                   value="<%= slotKey %>"
+                                   onchange="saveGrid()"
+                                   <%= existingAction !== 'delivery' ? 'style="display:none;" disabled' : 'style="display:block;"' %> <%= (isLocked || is_read_only) ? 'disabled' : '' %>>
+                        </td>
+                        <% } else { %>
+                        <td></td>
+                        <% } %>
+                    <% } %>
+                </tr>
+                <% } %>
+            </table>
+            <% }) %>
+        </form>
+    </div>
+    <script>
+        const ACTIONS_BY_STATUS = {
+            Triage: [
+                { value: 'triage_visit', label: 'Triage Visit', needsTime: false, needsDelivery: false },
+                { value: 'triage_reassessment', label: 'Triage Re-assessment', needsTime: false, needsDelivery: false }
+            ],
+            Admitted: [
+                { value: 'attended', label: 'Attended', needsTime: false, needsDelivery: false },
+                { value: 'delivery', label: 'Delivery', needsTime: true, needsDelivery: true }
+            ]
+        };
+        const ACTION_CONFIG = {
+            triage_visit: { needsTime: false, needsDelivery: false },
+            triage_reassessment: { needsTime: false, needsDelivery: false },
+            attended: { needsTime: false, needsDelivery: false },
+            delivery: { needsTime: true, needsDelivery: true }
+        };
+
+        function getStatusAtTime(option, slotTime) {
+            if (!option || !slotTime) return '';
+            const triageStart = option.getAttribute('data-triage-start');
+            const admittedAt = option.getAttribute('data-admitted-at');
+            const deliveredAt = option.getAttribute('data-delivered-at');
+            const dischargedAt = option.getAttribute('data-discharged-at');
+
+            const toDate = (val) => {
+                if (!val) return null;
+                const parsed = new Date(val);
+                return Number.isNaN(parsed.valueOf()) ? null : parsed;
+            };
+
+            const triageDt = toDate(triageStart);
+            const admittedDt = toDate(admittedAt);
+            const deliveredDt = toDate(deliveredAt);
+            const dischargedDt = toDate(dischargedAt);
+
+            if (dischargedDt && slotTime >= dischargedDt) return 'Discharged';
+            if (deliveredDt && slotTime >= deliveredDt) return 'Delivered';
+            if (admittedDt && slotTime >= admittedDt) return 'Admitted';
+            if (triageDt && slotTime >= triageDt) return 'Triage';
+            return '';
+        }
+
+        function applyCellState(cell) {
+            if (!cell) return;
+            const locked = cell.getAttribute('data-locked') === '1';
+            const patientSelect = cell.querySelector('.patient-select');
+            const actionSelect = cell.querySelector('.action-select');
+            const deliverySel = cell.querySelector('.delivery-select');
+            const deliveryTime = cell.querySelector('.delivery-time');
+            const timeLabel = cell.querySelector('.slot-time');
+
+            const selectedOption = patientSelect ? patientSelect.selectedOptions[0] : null;
+            const slotTimeRaw = cell.getAttribute('data-slot-time');
+            const slotTime = slotTimeRaw ? new Date(slotTimeRaw) : null;
+            const status = getStatusAtTime(selectedOption, slotTime);
+            const actions = ACTIONS_BY_STATUS[status] ? [...ACTIONS_BY_STATUS[status]] : [];
+            const currentAction = actionSelect ? actionSelect.value : '';
+
+            if (!patientSelect || !actionSelect) return;
+
+            if (!patientSelect.value) {
+                actionSelect.value = '';
+                actionSelect.style.display = 'none';
+                actionSelect.disabled = true;
+                if (deliverySel) {
+                    deliverySel.value = '';
+                    deliverySel.style.display = 'none';
+                    deliverySel.disabled = true;
+                }
+                if (deliveryTime) {
+                    deliveryTime.style.display = 'none';
+                    deliveryTime.disabled = true;
+                }
+                if (timeLabel) {
+                    timeLabel.style.display = 'none';
+                }
+                return;
+            }
+
+            actionSelect.innerHTML = '';
+            const placeholder = document.createElement('option');
+            placeholder.value = '';
+            placeholder.textContent = '--';
+            actionSelect.appendChild(placeholder);
+            actions.forEach((action) => {
+                const opt = document.createElement('option');
+                opt.value = action.value;
+                opt.textContent = action.label;
+                actionSelect.appendChild(opt);
+            });
+            if (currentAction && !actions.some((action) => action.value === currentAction)) {
+                actions.push({
+                    value: currentAction,
+                    label: currentAction.charAt(0).toUpperCase() + currentAction.slice(1),
+                    needsTime: ACTION_CONFIG[currentAction]?.needsTime || false,
+                    needsDelivery: ACTION_CONFIG[currentAction]?.needsDelivery || false
+                });
+            }
+
+            const hasActions = actions.length > 0;
+            if (!hasActions) {
+                const emptyOpt = document.createElement('option');
+                emptyOpt.value = '';
+                emptyOpt.textContent = 'No actions';
+                actionSelect.appendChild(emptyOpt);
+            }
+            actionSelect.style.display = 'block';
+            actionSelect.disabled = locked || !hasActions;
+            if (currentAction) {
+                actionSelect.value = currentAction;
+            }
+
+            const selectedAction = actions.find((a) => a.value === actionSelect.value) || null;
+            const actionMeta = selectedAction || ACTION_CONFIG[actionSelect.value] || null;
+            const showDelivery = actionMeta && actionMeta.needsDelivery;
+            const showTime = actionMeta && actionMeta.needsTime;
+
+            if (deliverySel) {
+                deliverySel.style.display = showDelivery ? 'block' : 'none';
+                if (!showDelivery) deliverySel.value = '';
+                deliverySel.disabled = !showDelivery || locked;
+            }
+            if (deliveryTime) {
+                deliveryTime.style.display = showTime ? 'block' : 'none';
+                deliveryTime.disabled = !showTime || locked;
+            }
+            if (timeLabel) {
+                timeLabel.style.display = showTime ? 'block' : 'none';
+            }
+        }
+        function saveGrid(callback) {
+            const form = document.getElementById('grid-form');
+            if (!form) { if (callback) callback(); return false; }
+            const data = new FormData(form);
+            fetch(form.action, { method: 'POST', body: data, headers: {'X-Requested-With': 'fetch'}, keepalive: true })
+                .finally(() => { if (callback) callback(); });
+            return false;
+        }
+        function beaconSave() {
+            const form = document.getElementById('grid-form');
+            if (!form || !navigator.sendBeacon) { return false; }
+            const payload = new URLSearchParams(new FormData(form));
+            return navigator.sendBeacon(form.action, payload);
+        }
+        document.querySelectorAll('a[data-save-grid]').forEach((link) => {
+            link.addEventListener('click', (event) => {
+                if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+                    return;
+                }
+                event.preventDefault();
+                saveGrid(() => { window.location = link.href; });
+            });
+        });
+        document.querySelectorAll('td').forEach((cell) => {
+            if (cell.querySelector('.patient-select')) {
+                applyCellState(cell);
+            }
+        });
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'hidden') {
+                beaconSave();
+            }
+        });
+        window.addEventListener('beforeunload', () => {
+            beaconSave();
+        });
+    </script>
+</body>
+</html>

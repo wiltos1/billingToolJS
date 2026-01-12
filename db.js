@@ -1,0 +1,206 @@
+const fs = require('fs');
+const path = require('path');
+const bcrypt = require('bcryptjs');
+const initSqlJs = require('sql.js');
+
+let SQL = null;
+let db = null;
+
+const DATA_DIR = process.env.DB_DIR || __dirname;
+const dbPath = path.join(DATA_DIR, 'billing_js.db');
+
+// Ensure the directory exists (important on fresh disks)
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+
+const assertDb = () => {
+  if (!db) {
+    throw new Error('Database not initialized. Call initDb() before using db helpers.');
+  }
+};
+
+const persist = () => {
+  const data = db.export();
+  fs.writeFileSync(dbPath, Buffer.from(data));
+};
+
+const dbGet = (sql, params = []) => {
+  assertDb();
+  const stmt = db.prepare(sql);
+  stmt.bind(params);
+  let row = null;
+  if (stmt.step()) {
+    row = stmt.getAsObject();
+  }
+  stmt.free();
+  return row;
+};
+
+const dbAll = (sql, params = []) => {
+  assertDb();
+  const stmt = db.prepare(sql);
+  stmt.bind(params);
+  const rows = [];
+  while (stmt.step()) {
+    rows.push(stmt.getAsObject());
+  }
+  stmt.free();
+  return rows;
+};
+
+const dbRun = (sql, params = []) => {
+  assertDb();
+  const stmt = db.prepare(sql);
+  stmt.bind(params);
+  stmt.step();
+  stmt.free();
+
+  const changes = db.getRowsModified();
+  let lastInsertRowid;
+  if (/^\s*insert/i.test(sql)) {
+    const row = dbGet('SELECT last_insert_rowid() as id');
+    lastInsertRowid = row ? row.id : undefined;
+  }
+  persist();
+  return { changes, lastInsertRowid };
+};
+
+const dbExec = (sql) => {
+  assertDb();
+  db.exec(sql);
+  persist();
+};
+
+const ensureSchema = () => {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS doctors (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      is_on_shift INTEGER DEFAULT 0
+    );
+
+    CREATE TABLE IF NOT EXISTS patients (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      initials TEXT NOT NULL,
+      identifier TEXT NOT NULL,
+      start_datetime TEXT NOT NULL,
+      discharge_datetime TEXT,
+      care_status TEXT DEFAULT 'Triage',
+      care_admitted_at TEXT,
+      care_delivered_at TEXT,
+      status TEXT DEFAULT 'active',
+      optimized_total REAL DEFAULT 0
+    );
+
+    CREATE TABLE IF NOT EXISTS billings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      patient_id INTEGER NOT NULL,
+      doctor_id INTEGER NOT NULL,
+      code TEXT NOT NULL,
+      description TEXT,
+      amount REAL NOT NULL,
+      timestamp TEXT NOT NULL,
+      optimized_included INTEGER DEFAULT 0,
+      FOREIGN KEY (patient_id) REFERENCES patients(id) ON DELETE CASCADE,
+      FOREIGN KEY (doctor_id) REFERENCES doctors(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS shift_slots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      doctor_id INTEGER NOT NULL,
+      patient_id INTEGER,
+      start_time TEXT NOT NULL,
+      action TEXT DEFAULT 'attended',
+      delivery_by TEXT,
+      FOREIGN KEY (doctor_id) REFERENCES doctors(id) ON DELETE CASCADE,
+      FOREIGN KEY (patient_id) REFERENCES patients(id) ON DELETE SET NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS shift_windows (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      doctor_id INTEGER NOT NULL,
+      start_datetime TEXT NOT NULL,
+      end_datetime TEXT NOT NULL,
+      is_active INTEGER DEFAULT 1,
+      FOREIGN KEY (doctor_id) REFERENCES doctors(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS confirmed_billings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      patient_id INTEGER NOT NULL,
+      doctor_id INTEGER,
+      code TEXT NOT NULL,
+      modifier TEXT,
+      timestamp TEXT NOT NULL,
+      FOREIGN KEY (patient_id) REFERENCES patients(id) ON DELETE CASCADE,
+      FOREIGN KEY (doctor_id) REFERENCES doctors(id) ON DELETE SET NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_shift_slots_start_time ON shift_slots(start_time);
+    CREATE INDEX IF NOT EXISTS idx_billings_patient_id ON billings(patient_id);
+    CREATE INDEX IF NOT EXISTS idx_confirmed_billings_patient_id ON confirmed_billings(patient_id);
+  `);
+
+  const patientColumns = dbAll('PRAGMA table_info(patients)');
+  const hasBillingNote = patientColumns.some((col) => col.name === 'billing_note');
+  if (!hasBillingNote) {
+    db.exec('ALTER TABLE patients ADD COLUMN billing_note TEXT');
+  }
+
+  const shiftColumns = dbAll('PRAGMA table_info(shift_slots)');
+  const hasLocked = shiftColumns.some((col) => col.name === 'locked');
+  if (!hasLocked) {
+    db.exec('ALTER TABLE shift_slots ADD COLUMN locked INTEGER DEFAULT 0');
+  }
+};
+
+const ensureDefaults = () => {
+  const user = dbGet('SELECT id FROM users WHERE username = ?', ['doctor']);
+  if (!user) {
+    const hash = bcrypt.hashSync('test123', 10);
+    dbRun('INSERT INTO users (username, password_hash) VALUES (?, ?)', ['doctor', hash]);
+  }
+
+  const countRow = dbGet('SELECT COUNT(*) as count FROM doctors');
+  if (countRow && countRow.count === 0) {
+    ['A. Smith', 'B. Johnson', 'C. Patel'].forEach((name) => {
+      dbRun('INSERT INTO doctors (name, is_on_shift) VALUES (?, 0)', [name]);
+    });
+  }
+};
+
+const initDb = async () => {
+  if (db) return db;
+  const wasmPath = require.resolve('sql.js/dist/sql-wasm.wasm');
+  const wasmDir = path.dirname(wasmPath);
+  SQL = await initSqlJs({
+    locateFile: (file) => path.join(wasmDir, file),
+  });
+
+  if (fs.existsSync(dbPath)) {
+    const fileBuffer = fs.readFileSync(dbPath);
+    db = new SQL.Database(fileBuffer);
+  } else {
+    db = new SQL.Database();
+  }
+
+  ensureSchema();
+  ensureDefaults();
+  persist();
+  return db;
+};
+
+module.exports = {
+  initDb,
+  dbGet,
+  dbAll,
+  dbRun,
+  dbExec,
+};

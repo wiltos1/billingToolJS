@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Manage Doctors</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f3f7fb;
+        }
+        .card {
+            background:#fff; padding:20px; margin:15px 0;
+            border-radius:8px; box-shadow:0 2px 4px rgba(0,0,0,0.08);
+        }
+        h1 { margin-top:0; }
+        label { display:block; margin-top:8px; }
+        input, select {
+            width:100%; padding:6px; margin-top:2px; border:1px solid #ccc; border-radius:4px;
+        }
+        button {
+            margin-top:10px; padding:6px 12px; border:none; border-radius:4px;
+            background:#1976d2; color:#fff; cursor:pointer;
+        }
+        ul { padding-left:20px; }
+        .muted { opacity:0.7; font-style:italic; }
+        a { color:#1976d2; }
+        .top-link { display:inline-block; margin-bottom:12px; }
+    </style>
+</head>
+<body>
+    <a class="top-link" href="/shift_grid">&#8592; Back to Shift Grid</a>
+    <div class="card">
+        <h1>Doctors On Call</h1>
+        <% if (doctors.length) { %>
+            <% if (shiftDoctor && shiftWindow) { %>
+            <p class="muted">Current on shift: Dr. <%= shiftDoctor.name %> (<%= format_display_24(new Date(shiftWindow.start_datetime)) %> &rarr; <%= format_display_24(new Date(shiftWindow.end_datetime)) %>)</p>
+            <% } else { %>
+            <p class="muted">No doctor is currently on shift. Set one below.</p>
+            <% } %>
+            <div class="card" style="margin-top:12px;">
+                <h3>Active On-Call</h3>
+                <% if (shiftDoctor && shiftWindow) { %>
+                <p class="muted">Dr. <%= shiftDoctor.name %> (<%= format_display_24(new Date(shiftWindow.start_datetime)) %> &rarr; <%= format_display_24(new Date(shiftWindow.end_datetime)) %>)</p>
+                <% } %>
+                <button type="button" id="toggle-new-shift">Create New On Shift</button>
+                <div id="new-shift-form" style="display:none; margin-top:12px;">
+                <h3>Change On-Shift Doctor</h3>
+                <form method="post" action="/doctors/on_shift">
+                    <label>Doctor</label>
+                    <select name="doctor_id">
+                        <% doctors.forEach((doc) => { %>
+                        <option value="<%= doc.id %>" <%= shiftDoctor && shiftDoctor.id === doc.id ? 'selected' : '' %>>
+                            Dr. <%= doc.name %>
+                        </option>
+                        <% }) %>
+                    </select>
+                    <label>Shift Date</label>
+                    <input type="date" name="shift_date" value="<%= default_start_date %>">
+                    <label>Shift Type</label>
+                    <div style="display:flex; gap:12px; flex-wrap:wrap;">
+                        <label style="display:flex; gap:6px; align-items:center; margin:0;">
+                            <input type="radio" name="shift_type" value="day" checked>
+                            Day (08:00 - 20:00)
+                        </label>
+                        <label style="display:flex; gap:6px; align-items:center; margin:0;">
+                            <input type="radio" name="shift_type" value="night">
+                            Night (20:00 - 08:00)
+                        </label>
+                        <label style="display:flex; gap:6px; align-items:center; margin:0;">
+                            <input type="radio" name="shift_type" value="custom">
+                            Custom
+                        </label>
+                    </div>
+
+                    <div id="custom-shift" style="display:none;">
+                        <label>Custom Shift Start</label>
+                        <input type="time" name="shift_start_time" value="<%= default_start_time %>">
+                        <label>Custom Shift End</label>
+                        <input type="time" name="shift_end_time" value="<%= default_end_time %>">
+                    </div>
+                    <button>Set On Shift</button>
+                </form>
+                </div>
+            </div>
+        <% } else { %>
+            <p class="muted">No doctors available yet. Add one below.</p>
+        <% } %>
+    </div>
+
+    <div class="card">
+        <h3>Add Doctor</h3>
+        <form action="/doctors" method="post">
+            <label>Name</label>
+            <input type="text" name="doctor_name" required>
+            <button>Add Doctor</button>
+        </form>
+    </div>
+
+    <div class="card">
+        <h3>Recent Shift Grids (Last 4 Days)</h3>
+        <% if (recent_shift_windows && recent_shift_windows.length) { %>
+        <table>
+            <tr><th>Doctor</th><th>Window</th><th>Actions</th></tr>
+            <% recent_shift_windows.forEach((win) => { %>
+            <tr>
+                <td>Dr. <%= win.doctor_name || 'Unknown' %> <% if (win.is_active) { %><span class="muted">(active)</span><% } %></td>
+                <td><%= format_display_24(new Date(win.start_datetime)) %> to <%= format_display_24(new Date(win.end_datetime)) %></td>
+                <td>
+                    <a href="/shift_grid?window_id=<%= win.id %>">View</a>
+                    <form action="/doctors/activate_shift" method="post" style="display:inline; margin-left:8px;">
+                        <input type="hidden" name="window_id" value="<%= win.id %>">
+                        <button type="submit">Make Active</button>
+                    </form>
+                </td>
+            </tr>
+            <% }) %>
+        </table>
+        <% } else { %>
+        <p class="muted">No recent shift grids.</p>
+        <% } %>
+    </div>
+</body>
+<script>
+    const radios = document.querySelectorAll('input[name="shift_type"]');
+    const custom = document.getElementById('custom-shift');
+    function toggleCustom() {
+        const selected = document.querySelector('input[name="shift_type"]:checked');
+        if (!custom || !selected) return;
+        custom.style.display = selected.value === 'custom' ? 'block' : 'none';
+    }
+    radios.forEach((radio) => radio.addEventListener('change', toggleCustom));
+    toggleCustom();
+    const toggleBtn = document.getElementById('toggle-new-shift');
+    const newShiftForm = document.getElementById('new-shift-form');
+    if (toggleBtn && newShiftForm) {
+        toggleBtn.addEventListener('click', () => {
+            newShiftForm.style.display = newShiftForm.style.display === 'none' ? 'block' : 'none';
+        });
+    }
+</script>
+</html>

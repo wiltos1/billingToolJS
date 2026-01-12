@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Billing Optimization Suite</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1100px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f3f7fb;
+        }
+        .card {
+            background: #fff; padding: 15px 20px; margin: 15px 0;
+            border-radius: 8px; box-shadow: 0 2px 4px rgba(0, 0, 0, 0.08);
+        }
+        .topbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+        .topbar .toggle-buttons { flex: 1; justify-content: center; }
+        .toggle-buttons { display: flex; gap: 8px; align-items: center; }
+        .toggle-buttons a {
+            padding: 6px 14px; border-radius: 999px; border: 1px solid #1976d2;
+            color: #1976d2; text-decoration: none; font-size: 0.9em;
+        }
+        .toggle-buttons a.active-view { background: #1976d2; color: #fff; }
+        label { display: block; margin-top: 8px; }
+        select, button {
+            padding: 6px 12px; border-radius: 4px; border: 1px solid #ccc;
+        }
+        button { background: #1976d2; color: #fff; border: none; cursor: pointer; }
+        table { width: 100%; border-collapse: collapse; font-size: 0.9em; margin-top: 8px; }
+        th, td { border: 1px solid #ddd; padding: 6px; }
+        th { background: #e8eef4; }
+        .muted { opacity: 0.6; font-style: italic; }
+        img { max-height: 60px; vertical-align: middle; margin-right: 10px; }
+    </style>
+</head>
+<body>
+    <div class="topbar">
+        <div>
+            <img src="/static/ahs_logo.png" alt="AHS logo">
+            <strong>Patient Billing Optimizer</strong>
+        </div>
+        <div class="toggle-buttons">
+            <a href="/?view=active">Active Patients</a>
+            <a href="/optimization" class="active-view">Optimization Suite</a>
+            <a href="/?view=archived">Archived Patients</a>
+            <a href="/shift_grid">Shift Grid</a>
+        </div>
+        <div class="topbar-actions">
+            <span>Logged in as <%= session.user %> &mdash; <a href="/logout">Logout</a></span>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>Active Patient Optimization</h2>
+        <% if (active_patients.length) { %>
+        <form method="get" action="/optimization">
+            <label>Select Patient</label>
+            <select name="selected_patient" onchange="this.form.submit()">
+                <% active_patients.forEach((p) => { %>
+                <option value="<%= p.id %>" <%= selected_patient && selected_patient.id === p.id ? 'selected' : '' %>>
+                    #<%= p.id %> - <%= p.initials %> - <%= p.identifier %>
+                </option>
+                <% }) %>
+            </select>
+        </form>
+        <% if (selected_patient) { %>
+        <button type="submit" form="confirm-form" style="margin-top:10px;">Confirm and Archive</button>
+        <% } %>
+        <% } else { %>
+        <p class="muted">No active patients available.</p>
+        <% } %>
+    </div>
+
+    <% if (selected_patient) { %>
+    <div class="card">
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+            <div>
+                <h3 style="margin:0;">Suggested Optimized Billing</h3>
+                <p class="muted" style="margin:6px 0 0;">Patient #<%= selected_patient.id %> &mdash; <%= selected_patient.initials %> / <%= selected_patient.identifier %></p>
+            </div>
+            <% if (!optimization_error && recommendations.length) { %>
+            <form action="/patients/<%= selected_patient.id %>/confirmed_pdf" method="get" style="margin:0;">
+                <button type="submit" title="Download Optimized Billing PDF" aria-label="Download Optimized Billing PDF" style="display:inline-flex; align-items:center; justify-content:center; width:38px; height:38px; border-radius:999px; padding:0;">
+                    <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                        <path d="M19 18a4 4 0 0 0-1-7.87A6 6 0 1 0 6 15H5a3 3 0 0 0 0 6h11a3 3 0 0 0 3-3Z" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        <path d="M12 7v8" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        <path d="m8 11 4 4 4-4" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                </button>
+            </form>
+            <% } %>
+        </div>
+
+        <table>
+            <tr><th>Status Event</th><th>Date/Time</th></tr>
+            <tr>
+                <td>Triage</td>
+                <td><%= selected_patient.start_datetime ? format_display(new Date(selected_patient.start_datetime)) : '-' %></td>
+            </tr>
+            <tr>
+                <td>Admitted</td>
+                <td><%= selected_patient.care_admitted_at ? format_display(new Date(selected_patient.care_admitted_at)) : '-' %></td>
+            </tr>
+            <tr>
+                <td>Delivered</td>
+                <td><%= selected_patient.care_delivered_at ? format_display(new Date(selected_patient.care_delivered_at)) : '-' %></td>
+            </tr>
+            <tr>
+                <td>Discharged</td>
+                <td><%= selected_patient.discharge_datetime ? format_display(new Date(selected_patient.discharge_datetime)) : '-' %></td>
+            </tr>
+        </table>
+
+        <% if (optimization_error) { %>
+        <p class="muted"><%= optimization_error %></p>
+        <% } %>
+
+        <% if (!optimization_error && recommendations.length) { %>
+        <table>
+            <tr><th>Time</th><th>Code</th><th>Modifier</th><th>Doctor</th></tr>
+            <% recommendations.forEach((rec) => { %>
+            <tr>
+                <td><%= format_display(rec.time) %></td>
+                <td><%= rec.code %></td>
+                <td><%= rec.modifier || '-' %></td>
+                <td><%= rec.doctor ? ('Dr. ' + rec.doctor.name) : '-' %></td>
+            </tr>
+            <% }) %>
+        </table>
+        <% } %>
+    </div>
+    <% } %>
+
+    <% if (selected_patient) { %>
+    <div class="card">
+        <h3>Billing Notes</h3>
+        <form id="confirm-form" method="post" action="/optimization/<%= selected_patient.id %>/confirm">
+            <label>Patient-specific notes</label>
+            <textarea name="billing_note" rows="4" style="width:100%; padding:8px; border-radius:4px; border:1px solid #ccc;"><%= selected_patient.billing_note || '' %></textarea>
+        </form>
+    </div>
+    <% } %>
+</body>
+</html>

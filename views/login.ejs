@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>AHS Billing Login</title>
+    <style>
+        body {
+            background: #e1eff7;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            font-family: Arial, sans-serif;
+        }
+        .box {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            width: 300px;
+            text-align: center;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
+        }
+        img { max-width: 120px; margin-bottom: 12px; }
+        input {
+            width: 100%;
+            padding: 8px;
+            margin: 4px 0;
+            border-radius: 4px;
+            border: 1px solid #ccc;
+        }
+        button {
+            width: 100%;
+            padding: 10px;
+            background: #1976d2;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            margin-top: 8px;
+            cursor: pointer;
+        }
+        .error { background: #ffcdd2; padding: 6px; border-radius: 4px; }
+    </style>
+</head>
+<body>
+    <div class="box">
+        <img src="/static/ahs_logo.png" alt="AHS Logo">
+        <h3>AHS Billing Login</h3>
+        <% if (error) { %><div class="error"><%= error %></div><% } %>
+        <form method="post">
+            <input name="username" placeholder="Username" required>
+            <input name="password" placeholder="Password" type="password" required>
+            <button>Login</button>
+        </form>
+    </div>
+</body>
+</html>

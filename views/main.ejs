@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Patient Billing Optimizer</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1100px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f3f7fb;
+        }
+        .topbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+        .card {
+            background: #fff; padding: 15px 20px; margin: 15px 0;
+            border-radius: 8px; box-shadow: 0 2px 4px rgba(0, 0, 0, 0.08);
+        }
+        .toggle-buttons { display: flex; gap: 8px; align-items: center; }
+        .toggle-buttons a {
+            padding: 6px 14px; border-radius: 999px; border: 1px solid #1976d2;
+            color: #1976d2; text-decoration: none; font-size: 0.9em;
+        }
+        .toggle-buttons a.active-view { background: #1976d2; color: #fff; }
+        .topbar-actions { display: flex; align-items: center; gap: 12px; }
+        .topbar-actions a.action-link { color: #1976d2; text-decoration: none; font-weight: bold; }
+        label { display: block; margin-top: 8px; }
+        input, select {
+            width: 100%; padding: 6px; margin-top: 2px; border: 1px solid #ccc; border-radius: 4px;
+        }
+        button {
+            margin-top: 10px; padding: 6px 12px; border: none; border-radius: 4px;
+            background: #1976d2; color: #fff; cursor: pointer;
+        }
+        .delete-btn { background: #c62828; margin-right: 8px; }
+        .delete-btn:hover { opacity: 0.9; }
+        .card-actions { margin-top: 8px; }
+        table { width: 100%; border-collapse: collapse; font-size: 0.9em; margin-top: 8px; }
+        th, td { border: 1px solid #ddd; padding: 6px; }
+        th { background: #e8eef4; }
+        .badge {
+            padding: 2px 6px; border-radius: 4px; font-size: 0.75em; margin-left: 6px;
+        }
+        .active { background: #c8e6c9; }
+        .discharged { background: #ffcdd2; }
+        .muted { opacity: 0.6; font-style: italic; }
+        img { max-height: 60px; vertical-align: middle; margin-right: 10px; }
+        .card-header { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; }
+        .card-title { margin:0; }
+        .section-divider { border:0; border-top:1px solid #e5e8ec; margin:12px 0; }
+        .section-header { display:flex; align-items:center; gap:8px; margin:0 0 6px 0; }
+        .inline-muted { font-size:0.85em; color:#6b7280; }
+        .card-header button { margin-top: 0; }
+    </style>
+</head>
+<body>
+
+<div class="topbar">
+    <div>
+        <img src="/static/ahs_logo.png" alt="AHS logo">
+        <strong>Patient Billing Optimizer</strong>
+    </div>
+    <div class="toggle-buttons">
+        <a href="/?view=active" class="<%= current_view === 'active' ? 'active-view' : '' %>">Active Patients</a>
+        <a href="/optimization">Optimization Suite</a>
+        <a href="/?view=archived" class="<%= current_view === 'archived' ? 'active-view' : '' %>">Archived Patients</a>
+        <a href="/shift_grid">Shift Grid</a>
+    </div>
+    <div class="topbar-actions">
+        <span>Logged in as <%= session.user %> &mdash; <a href="/logout">Logout</a></span>
+    </div>
+</div>
+
+<% if (current_view === 'active') { %>
+<div class="card">
+    <h2>Create New Patient</h2>
+    <form action="/patients" method="post">
+        <label>Initials</label>
+        <input type="text" name="patient_initials" maxlength="4" required>
+
+        <label>Patient Identifier</label>
+        <input type="text" name="patient_identifier" required>
+
+        <label>Activation Date</label>
+        <input type="date" name="start_date" value="<%= default_start_date %>" required>
+
+        <label>Activation Time</label>
+        <input type="time" name="start_time" value="<%= default_start_time %>" step="60">
+
+        <button>Create Patient</button>
+    </form>
+</div>
+<% } %>
+
+<% if (current_view === 'active') { %>
+<div class="card">
+    <h3>Active Patients</h3>
+<% if (active_patients.length) { %>
+    <form method="get">
+        <input type="hidden" name="view" value="active">
+        <select name="selected_patient" onchange="this.form.submit()">
+            <% active_patients.forEach((p) => { %>
+            <option value="<%= p.id %>" <%= selected_patient && selected_patient.id === p.id ? 'selected' : '' %>>
+                #<%= p.id %> - <%= p.initials %> - <%= p.identifier %>
+            </option>
+            <% }) %>
+        </select>
+    </form>
+    <% } else { %>
+    <p class="muted">None</p>
+    <% } %>
+</div>
+<% } %>
+
+<% if (current_view === 'archived') { %>
+<div class="card">
+    <h3>Archived Patients</h3>
+    <% if (archived_patients.length) { %>
+    <table>
+        <tr><th>Initials</th><th>ID Number</th><th>Download</th><th>Re-activate</th><th>Delete</th></tr>
+        <% archived_patients.forEach((p) => { %>
+        <tr>
+            <td><%= p.initials %></td>
+            <td><%= p.identifier %></td>
+            <td>
+                <form action="/patients/<%= p.id %>/confirmed_pdf" method="get" style="margin:0;">
+                    <button type="submit">Download</button>
+                </form>
+            </td>
+            <td>
+                <form action="/patients/<%= p.id %>/restore" method="post" style="margin:0;">
+                    <button type="submit">Re-activate Patient</button>
+                </form>
+            </td>
+            <td>
+                <form action="/patients/<%= p.id %>/delete" method="post" style="margin:0;" onsubmit="return confirm('Permanently delete this patient? This cannot be undone.');">
+                    <button type="submit" style="background:#c62828;">Delete Patient</button>
+                </form>
+            </td>
+        </tr>
+        <% }) %>
+    </table>
+    <% } else { %>
+    <p class="muted">None</p>
+    <% } %>
+</div>
+<% } %>
+
+<% if (selected_patient && current_view !== 'archived') { %>
+<div class="card">
+    <div class="card-header">
+        <div>
+            <h2 class="card-title">
+                Patient #<%= selected_patient.id %> - <%= selected_patient.initials %> - <%= selected_patient.identifier %>
+                <% if (selected_patient.status === 'active') { %>
+                    <span class="badge active">active</span>
+                <% } else { %>
+                    <span class="badge discharged">archived</span>
+                <% } %>
+                <span class="badge"><%= selected_patient.care_status %></span>
+            </h2>
+            <% if (selected_patient.start_display) { %>
+            <p class="muted">Activated <%= selected_patient.start_display %></p>
+            <% } %>
+            <% if (selected_patient.discharge_display) { %>
+            <p class="muted">Discharged <%= selected_patient.discharge_display %></p>
+            <% } %>
+        </div>
+        <form action="/patients/<%= selected_patient.id %>/delete" method="post" onsubmit="return confirm('Delete this patient?');">
+            <input type="hidden" name="view" value="<%= current_view %>">
+            <button type="submit" class="delete-btn">Delete Patient</button>
+        </form>
+    </div>
+    <hr class="section-divider">
+    <div class="card-actions">
+        <h3 class="section-header">Status Timeline</h3>
+        <form action="/patients/<%= selected_patient.id %>/timeline" method="post">
+            <table>
+                <tr><th>Status</th><th>Date</th><th>Time</th></tr>
+                <tr>
+                    <td>Triage</td>
+                    <td><input type="date" name="triage_date" value="<%= triage_date %>"></td>
+                    <td><input type="time" name="triage_time" value="<%= triage_time %>" step="60"></td>
+                </tr>
+                <tr>
+                    <td>Admitted</td>
+                    <td><input type="date" name="admitted_date" value="<%= admitted_date %>"></td>
+                    <td><input type="time" name="admitted_time" value="<%= admitted_time %>" step="60"></td>
+                </tr>
+                <tr>
+                    <td>Delivered</td>
+                    <td><input type="date" name="delivered_date" value="<%= delivered_date %>"></td>
+                    <td><input type="time" name="delivered_time" value="<%= delivered_time %>" step="60"></td>
+                </tr>
+                <tr>
+                    <td>Discharged</td>
+                    <td><input type="date" name="discharged_date" value="<%= discharged_date %>"></td>
+                    <td><input type="time" name="discharged_time" value="<%= discharged_time %>" step="60"></td>
+                </tr>
+            </table>
+            <button type="submit">Save Timeline</button>
+        </form>
+    </div>
+
+<% if (selected_patient.status === 'active') { %>
+
+<% if (patient_doctors.length) { %>
+<h3>Doctors Involved</h3>
+<table>
+<tr><th>ID</th><th>Doctor</th></tr>
+<% patient_doctors.forEach((d) => { %>
+<tr><td><%= d.id %></td><td>Dr. <%= d.name %></td></tr>
+<% }) %>
+</table>
+<% } %>
+
+<hr class="section-divider">
+<h3 class="section-header">Patient Timeline</h3>
+<% if (timeline_entries.length) { %>
+<table>
+<tr><th>Date/Time</th><th>Doctor</th><th>Action / Status</th></tr>
+<% timeline_entries.forEach((entry) => { %>
+<tr>
+    <td><%= format_display(entry.time) %></td>
+    <td><% if (entry.doctor_name) { %>Dr. <%= entry.doctor_name %><% } else { %>-<% } %></td>
+    <td>
+        <% if (entry.status_row) { %>
+            <strong><%= entry.action %></strong>
+        <% } else { %>
+            <%= entry.action %><% if (entry.delivery_by) { %> (<%= entry.delivery_by %>)<% } %>
+        <% } %>
+    </td>
+</tr>
+<% }) %>
+</table>
+<% } else { %>
+<p class="muted">No timeline events for this patient yet.</p>
+<% } %>
+
+<% if (patient_billings.length) { %>
+<hr class="section-divider">
+<h3 class="section-header">Billing Entries</h3>
+<table>
+<tr><th>Doctor</th><th>Code</th><th>Description</th><th>Amount</th><th>Date/Time</th></tr>
+<% patient_billings.forEach((b) => { %>
+<tr>
+<td><% if (b.doctor) { %>Dr. <%= b.doctor.name %><% } else { %>Unknown<% } %></td>
+<td><%= b.code %></td><td><%= b.description %></td><td><%= format_currency(b.amount) %></td>
+<td><%= format_display(new Date(b.timestamp)) %></td>
+</tr>
+<% }) %>
+</table>
+<% } %>
+
+<% } else { %>
+
+<hr class="section-divider">
+<h3>Final Optimized Billing</h3>
+<% if (optimized_billings.length) { %>
+<table>
+<tr><th>Doctor</th><th>Code</th><th>Description</th><th>Amount</th><th>Date/Time</th></tr>
+<% optimized_billings.forEach((b) => { %>
+<tr>
+<td><% if (b.doctor) { %>Dr. <%= b.doctor.name %><% } else { %>Unknown<% } %></td>
+<td><%= b.code %></td><td><%= b.description %></td><td><%= format_currency(b.amount) %></td>
+<td><%= format_display(new Date(b.timestamp)) %></td>
+</tr>
+<% }) %>
+</table>
+<h3>Total: $<%= format_currency(selected_patient.optimized_total) %></h3>
+<% } else { %>
+<p class="muted">No billing data.</p>
+<% } %>
+
+<hr class="section-divider">
+<p class="muted">Archived patients cannot be modified.</p>
+
+<form action="/patients/<%= selected_patient.id %>/restore" method="post">
+    <button>Restore to Active</button>
+</form>
+
+<% } %>
+</div>
+<% } %>
+
+</body>
+</html>
