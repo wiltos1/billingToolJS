@@ -13,6 +13,7 @@ const app = express();
 
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
+app.set('trust proxy', 1);
 
 app.use(express.urlencoded({ extended: true }));
 app.use(
@@ -21,7 +22,7 @@ app.use(
     resave: false,
     saveUninitialized: false,
     cookie: {
-      secure: process.env.NODE_ENV === 'production', // https only in prod
+      secure: 'auto',     // key change
       sameSite: 'lax',
     },
   })
