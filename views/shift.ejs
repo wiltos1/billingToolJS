@@ -16,6 +16,9 @@
         button { padding:8px 12px; border:none; border-radius:4px; background:#1976d2; color:#fff; cursor:pointer; }
         input[type="date"] { padding:6px; }
         .locked-cell { background: #f0f3f7; opacity: 0.7; }
+        .triage-extras, .delivery-extras { margin-top: 4px; text-align: left; font-size: 0.85em; }
+        .triage-extras label, .delivery-extras label { display: flex; align-items: center; gap: 6px; margin: 2px 0; }
+        .save-indicator { font-size: 0.85em; font-weight: bold; color: #2e7d32; }
     </style>
 </head>
 <body>
@@ -29,6 +32,7 @@
             <a href="/doctors/manage" data-save-grid="true">Manage Doctors</a>
         </div>
     </div>
+    <div class="save-indicator" id="save-indicator">Saved: --</div>
     <% if (is_read_only) { %>
     <div class="card">
         <p class="muted">Viewing a previous shift grid. This view is read-only.</p>
@@ -57,6 +61,15 @@
                         <% const existingPatient = slotObj ? slotObj.patient_id : null; %>
                         <% const existingAction = slotObj ? slotObj.action : ''; %>
                         <% const existingDelivery = slotObj ? slotObj.delivery_by : ''; %>
+                        <% const existingDeliveryCode = slotObj ? slotObj.delivery_code : ''; %>
+                        <% const existingDeliveryTime = slotObj ? slotObj.delivery_time : ''; %>
+                        <% const existingPph = slotObj ? slotObj.delivery_postpartum_hemorrhage : 0; %>
+                        <% const existingVacuum = slotObj ? slotObj.delivery_vacuum : 0; %>
+                        <% const existingLaceration = slotObj ? slotObj.delivery_vaginal_laceration : 0; %>
+                        <% const existingDystocia = slotObj ? slotObj.delivery_shoulder_dystocia : 0; %>
+                        <% const existingPlacenta = slotObj ? slotObj.delivery_manual_placenta : 0; %>
+                        <% const existingNst = slotObj ? slotObj.triage_non_stress_test : 0; %>
+                        <% const existingSpeculum = slotObj ? slotObj.triage_speculum_exam : 0; %>
                         <% const isLocked = slotObj && slotObj.locked === 1; %>
                         <% const hasCommittedAction = existingPatient && existingAction; %>
                         <td data-locked="<%= isLocked ? '1' : '0' %>" data-slot-time="<%= slotKey %>" class="<%= (is_read_only || isLocked) ? 'locked-cell' : '' %>">
@@ -67,7 +80,9 @@
                                 <% if (p.status !== 'active' && existingPatient !== p.id) { return; } %>
                                 <option value="<%= p.id %>"
                                         data-status="<%= p.care_status %>"
+                                        data-triage-action="<%= p.triage_action || 'triage_visit' %>"
                                         data-triage-start="<%= p.start_datetime || '' %>"
+                                        data-status-events='<%- JSON.stringify(p.status_events || []) %>'
                                         data-admitted-at="<%= p.care_admitted_at || '' %>"
                                         data-delivered-at="<%= p.care_delivered_at || '' %>"
                                         data-discharged-at="<%= p.discharge_datetime || '' %>"
@@ -77,20 +92,58 @@
                                 </option>
                                 <% }) %>
                             </select>
-                            <select class="action-select" name="slot_action_<%= Math.floor(slotTime.getTime() / 1000) %>" onchange="applyCellState(this.closest('td')); saveGrid();" <%= (isLocked || is_read_only) ? 'disabled' : '' %>>
+                            <select class="action-select" data-existing-action="<%= existingAction || '' %>" name="slot_action_<%= Math.floor(slotTime.getTime() / 1000) %>" onchange="applyCellState(this.closest('td')); saveGrid();" <%= (isLocked || is_read_only) ? 'disabled' : '' %>>
                                 <option value="" <%= !existingAction ? 'selected' : '' %>>--</option>
-                                <option value="attended" <%= existingAction === 'attended' ? 'selected' : '' %>>Attended</option>
-                                <option value="delivery" <%= existingAction === 'delivery' ? 'selected' : '' %>>Delivery</option>
                             </select>
-                            <select class="delivery-select" name="slot_delivery_<%= Math.floor(slotTime.getTime() / 1000) %>" onchange="saveGrid()" <%= existingAction !== 'delivery' ? 'disabled style="display:none;"' : 'style="display:block;"' %> <%= (isLocked || is_read_only) ? 'disabled' : '' %>>
-                                <option value="" <%= !existingDelivery ? 'selected' : '' %>>--</option>
-                                <option value="doctor" <%= existingDelivery === 'doctor' ? 'selected' : '' %>>Doctor</option>
-                                <option value="ob" <%= existingDelivery === 'ob' ? 'selected' : '' %>>OB</option>
+                            <select class="delivery-select" name="slot_delivery_code_<%= Math.floor(slotTime.getTime() / 1000) %>" onchange="saveGrid()" <%= existingAction !== 'delivery' ? 'disabled style="display:none;"' : 'style="display:block;"' %> <%= (isLocked || is_read_only) ? 'disabled' : '' %>>
+                                <% const fallbackDeliveryCode = existingDeliveryCode || (existingDelivery === 'ob' ? '87.98B' : '87.98A'); %>
+                                <option value="87.98A" <%= fallbackDeliveryCode === '87.98A' ? 'selected' : '' %>>87.98A (FP/MW)</option>
+                                <option value="87.98B" <%= fallbackDeliveryCode === '87.98B' ? 'selected' : '' %>>87.98B (OB)</option>
+                                <option value="87.98C" <%= fallbackDeliveryCode === '87.98C' ? 'selected' : '' %>>87.98C (FP/MW VBAC)</option>
                             </select>
                             <input class="delivery-time" type="datetime-local" name="slot_delivery_time_<%= Math.floor(slotTime.getTime() / 1000) %>"
-                                   value="<%= slotKey %>"
+                                   value="<%= existingDeliveryTime || slotKey %>"
                                    onchange="saveGrid()"
                                    <%= existingAction !== 'delivery' ? 'style="display:none;" disabled' : 'style="display:block;"' %> <%= (isLocked || is_read_only) ? 'disabled' : '' %>>
+                            <div class="delivery-extras" data-delivery-extras="true" style="display:none;">
+                                <label>
+                                    <input class="delivery-extra-input" type="checkbox" name="slot_delivery_pph_<%= Math.floor(slotTime.getTime() / 1000) %>" value="1"
+                                           <%= existingPph ? 'checked' : '' %> <%= (isLocked || is_read_only) ? 'disabled' : '' %>>
+                                    Postpartum hemorrhage (87.99A)
+                                </label>
+                                <label>
+                                    <input class="delivery-extra-input" type="checkbox" name="slot_delivery_vacuum_<%= Math.floor(slotTime.getTime() / 1000) %>" value="1"
+                                           <%= existingVacuum ? 'checked' : '' %> <%= (isLocked || is_read_only) ? 'disabled' : '' %>>
+                                    Vacuum delivery (84.21)
+                                </label>
+                                <label>
+                                    <input class="delivery-extra-input" type="checkbox" name="slot_delivery_laceration_<%= Math.floor(slotTime.getTime() / 1000) %>" value="1"
+                                           <%= existingLaceration ? 'checked' : '' %> <%= (isLocked || is_read_only) ? 'disabled' : '' %>>
+                                    Extensive vaginal laceration (87.89B)
+                                </label>
+                                <label>
+                                    <input class="delivery-extra-input" type="checkbox" name="slot_delivery_dystocia_<%= Math.floor(slotTime.getTime() / 1000) %>" value="1"
+                                           <%= existingDystocia ? 'checked' : '' %> <%= (isLocked || is_read_only) ? 'disabled' : '' %>>
+                                    Shoulder dystocia (85.69B)
+                                </label>
+                                <label>
+                                    <input class="delivery-extra-input" type="checkbox" name="slot_delivery_placenta_<%= Math.floor(slotTime.getTime() / 1000) %>" value="1"
+                                           <%= existingPlacenta ? 'checked' : '' %> <%= (isLocked || is_read_only) ? 'disabled' : '' %>>
+                                    Manual removal of placenta (87.6)
+                                </label>
+                            </div>
+                            <div class="triage-extras" data-triage-extras="true" style="display:none;">
+                                <label>
+                                    <input class="triage-extra-input" type="checkbox" name="slot_extra_nst_<%= Math.floor(slotTime.getTime() / 1000) %>" value="1"
+                                           <%= existingNst ? 'checked' : '' %> <%= (isLocked || is_read_only) ? 'disabled' : '' %>>
+                                    Non-stress test
+                                </label>
+                                <label>
+                                    <input class="triage-extra-input" type="checkbox" name="slot_extra_speculum_<%= Math.floor(slotTime.getTime() / 1000) %>" value="1"
+                                           <%= existingSpeculum ? 'checked' : '' %> <%= (isLocked || is_read_only) ? 'disabled' : '' %>>
+                                    Speculum exam
+                                </label>
+                            </div>
                         </td>
                         <% } else { %>
                         <td></td>
@@ -104,25 +157,22 @@
     </div>
     <script>
         const ACTIONS_BY_STATUS = {
-            Triage: [
-                { value: 'triage_visit', label: 'Triage Visit', needsTime: false, needsDelivery: false },
-                { value: 'triage_reassessment', label: 'Triage Re-assessment', needsTime: false, needsDelivery: false }
-            ],
             Admitted: [
                 { value: 'attended', label: 'Attended', needsTime: false, needsDelivery: false },
                 { value: 'delivery', label: 'Delivery', needsTime: true, needsDelivery: true }
             ]
         };
         const ACTION_CONFIG = {
-            triage_visit: { needsTime: false, needsDelivery: false },
-            triage_reassessment: { needsTime: false, needsDelivery: false },
-            attended: { needsTime: false, needsDelivery: false },
-            delivery: { needsTime: true, needsDelivery: true }
+            triage_visit: { label: 'Triage Visit', needsTime: false, needsDelivery: false },
+            triage_reassessment: { label: 'Triage Re-assessment', needsTime: false, needsDelivery: false },
+            attended: { label: 'Attended', needsTime: false, needsDelivery: false },
+            delivery: { label: 'Delivery', needsTime: true, needsDelivery: true }
         };
 
         function getStatusAtTime(option, slotTime) {
             if (!option || !slotTime) return '';
             const triageStart = option.getAttribute('data-triage-start');
+            const statusEventsRaw = option.getAttribute('data-status-events') || '[]';
             const admittedAt = option.getAttribute('data-admitted-at');
             const deliveredAt = option.getAttribute('data-delivered-at');
             const dischargedAt = option.getAttribute('data-discharged-at');
@@ -138,11 +188,36 @@
             const deliveredDt = toDate(deliveredAt);
             const dischargedDt = toDate(dischargedAt);
 
-            if (dischargedDt && slotTime >= dischargedDt) return 'Discharged';
-            if (deliveredDt && slotTime >= deliveredDt) return 'Delivered';
-            if (admittedDt && slotTime >= admittedDt) return 'Admitted';
-            if (triageDt && slotTime >= triageDt) return 'Triage';
-            return '';
+            const baseOrder = { Triage: 1, Admitted: 2, Delivered: 3, Discharged: 4 };
+            const events = [];
+            if (triageDt) events.push({ time: triageDt, status: 'Triage', order: baseOrder.Triage });
+            if (admittedDt) events.push({ time: admittedDt, status: 'Admitted', order: baseOrder.Admitted });
+            if (deliveredDt) events.push({ time: deliveredDt, status: 'Delivered', order: baseOrder.Delivered });
+            if (dischargedDt) events.push({ time: dischargedDt, status: 'Discharged', order: baseOrder.Discharged });
+            let parsedEvents = [];
+            try {
+                parsedEvents = JSON.parse(statusEventsRaw);
+            } catch (err) {
+                parsedEvents = [];
+            }
+            parsedEvents.forEach((event) => {
+                const eventTime = toDate(event.occurred_at);
+                if (!eventTime) return;
+                if (!baseOrder[event.status]) return;
+                const afterStatus = (event.after_status || '').trim() || 'Triage';
+                const afterOrder = baseOrder[afterStatus] || baseOrder.Triage;
+                events.push({ time: eventTime, status: event.status, order: afterOrder + 0.5 });
+            });
+
+            if (!events.length) return '';
+            events.sort((a, b) => (a.time - b.time) || (a.order - b.order));
+            let status = '';
+            events.forEach((event) => {
+                if (event.time <= slotTime) {
+                    status = event.status;
+                }
+            });
+            return status;
         }
 
         function applyCellState(cell) {
@@ -153,18 +228,24 @@
             const deliverySel = cell.querySelector('.delivery-select');
             const deliveryTime = cell.querySelector('.delivery-time');
             const timeLabel = cell.querySelector('.slot-time');
+            const triageExtras = cell.querySelector('[data-triage-extras]');
+            const triageExtraInputs = cell.querySelectorAll('.triage-extra-input');
+            const deliveryExtras = cell.querySelector('[data-delivery-extras]');
+            const deliveryExtraInputs = cell.querySelectorAll('.delivery-extra-input');
 
             const selectedOption = patientSelect ? patientSelect.selectedOptions[0] : null;
             const slotTimeRaw = cell.getAttribute('data-slot-time');
             const slotTime = slotTimeRaw ? new Date(slotTimeRaw) : null;
             const status = getStatusAtTime(selectedOption, slotTime);
-            const actions = ACTIONS_BY_STATUS[status] ? [...ACTIONS_BY_STATUS[status]] : [];
-            const currentAction = actionSelect ? actionSelect.value : '';
+            let actions = ACTIONS_BY_STATUS[status] ? [...ACTIONS_BY_STATUS[status]] : [];
+            const existingAction = actionSelect ? (actionSelect.getAttribute('data-existing-action') || '') : '';
+            let currentAction = actionSelect ? (actionSelect.value || existingAction) : '';
 
             if (!patientSelect || !actionSelect) return;
 
             if (!patientSelect.value) {
                 actionSelect.value = '';
+                actionSelect.setAttribute('data-existing-action', '');
                 actionSelect.style.display = 'none';
                 actionSelect.disabled = true;
                 if (deliverySel) {
@@ -173,13 +254,46 @@
                     deliverySel.disabled = true;
                 }
                 if (deliveryTime) {
+                    deliveryTime.value = slotTimeRaw || '';
                     deliveryTime.style.display = 'none';
                     deliveryTime.disabled = true;
                 }
+                if (deliveryExtras) {
+                    deliveryExtras.style.display = 'none';
+                }
+                deliveryExtraInputs.forEach((input) => {
+                    input.checked = false;
+                    input.disabled = true;
+                });
+                if (triageExtras) {
+                    triageExtras.style.display = 'none';
+                }
+                triageExtraInputs.forEach((input) => {
+                    input.checked = false;
+                    input.disabled = true;
+                });
                 if (timeLabel) {
                     timeLabel.style.display = 'none';
                 }
                 return;
+            }
+
+            if (status === 'Triage') {
+                const triageAction = selectedOption ? selectedOption.getAttribute('data-triage-action') : '';
+                if (triageAction && ACTION_CONFIG[triageAction]) {
+                    actions = [{
+                        value: triageAction,
+                        label: ACTION_CONFIG[triageAction].label,
+                        needsTime: ACTION_CONFIG[triageAction].needsTime,
+                        needsDelivery: ACTION_CONFIG[triageAction].needsDelivery
+                    }];
+                    if (!currentAction) {
+                        actionSelect.setAttribute('data-existing-action', triageAction);
+                        currentAction = triageAction;
+                    }
+                } else {
+                    actions = [];
+                }
             }
 
             actionSelect.innerHTML = '';
@@ -193,15 +307,6 @@
                 opt.textContent = action.label;
                 actionSelect.appendChild(opt);
             });
-            if (currentAction && !actions.some((action) => action.value === currentAction)) {
-                actions.push({
-                    value: currentAction,
-                    label: currentAction.charAt(0).toUpperCase() + currentAction.slice(1),
-                    needsTime: ACTION_CONFIG[currentAction]?.needsTime || false,
-                    needsDelivery: ACTION_CONFIG[currentAction]?.needsDelivery || false
-                });
-            }
-
             const hasActions = actions.length > 0;
             if (!hasActions) {
                 const emptyOpt = document.createElement('option');
@@ -232,20 +337,64 @@
             if (timeLabel) {
                 timeLabel.style.display = showTime ? 'block' : 'none';
             }
+            if (deliveryExtras) {
+                const showDeliveryExtras = actionSelect.value === 'delivery';
+                deliveryExtras.style.display = showDeliveryExtras ? 'block' : 'none';
+                deliveryExtraInputs.forEach((input) => {
+                    if (!showDeliveryExtras) {
+                        input.checked = false;
+                    }
+                    input.disabled = !showDeliveryExtras || locked;
+                    if (showDeliveryExtras) {
+                        input.onchange = () => saveGrid();
+                    }
+                });
+            }
+            if (triageExtras) {
+                const showExtras = actionSelect.value === 'triage_visit' || actionSelect.value === 'triage_reassessment';
+                triageExtras.style.display = showExtras ? 'block' : 'none';
+                triageExtraInputs.forEach((input) => {
+                    if (!showExtras) {
+                        input.checked = false;
+                    }
+                    input.disabled = !showExtras || locked;
+                    if (showExtras) {
+                        input.onchange = () => saveGrid();
+                    }
+                });
+            }
+        }
+        function setSavingIndicator() {
+            const indicator = document.getElementById('save-indicator');
+            if (!indicator) return;
+            indicator.textContent = 'Saving...';
         }
         function saveGrid(callback) {
             const form = document.getElementById('grid-form');
             if (!form) { if (callback) callback(); return false; }
             const data = new FormData(form);
+            setSavingIndicator();
             fetch(form.action, { method: 'POST', body: data, headers: {'X-Requested-With': 'fetch'}, keepalive: true })
-                .finally(() => { if (callback) callback(); });
+                .finally(() => { updateSaveIndicator(); if (callback) callback(); });
             return false;
+        }
+        function updateSaveIndicator() {
+            const indicator = document.getElementById('save-indicator');
+            if (!indicator) return;
+            const now = new Date();
+            const hh = String(now.getHours()).padStart(2, '0');
+            const mm = String(now.getMinutes()).padStart(2, '0');
+            const ss = String(now.getSeconds()).padStart(2, '0');
+            indicator.textContent = `Saved: ${hh}:${mm}:${ss}`;
         }
         function beaconSave() {
             const form = document.getElementById('grid-form');
             if (!form || !navigator.sendBeacon) { return false; }
             const payload = new URLSearchParams(new FormData(form));
-            return navigator.sendBeacon(form.action, payload);
+            setSavingIndicator();
+            const sent = navigator.sendBeacon(form.action, payload);
+            if (sent) updateSaveIndicator();
+            return sent;
         }
         document.querySelectorAll('a[data-save-grid]').forEach((link) => {
             link.addEventListener('click', (event) => {
@@ -261,6 +410,7 @@
                 applyCellState(cell);
             }
         });
+        updateSaveIndicator();
         document.addEventListener('visibilitychange', () => {
             if (document.visibilityState === 'hidden') {
                 beaconSave();

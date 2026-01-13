@@ -51,6 +51,17 @@
         .section-header { display:flex; align-items:center; gap:8px; margin:0 0 6px 0; }
         .inline-muted { font-size:0.85em; color:#6b7280; }
         .card-header button { margin-top: 0; }
+        .modal-backdrop {
+            position: fixed; inset: 0; background: rgba(15, 23, 42, 0.45);
+            display: none; align-items: center; justify-content: center; z-index: 50;
+        }
+        .modal {
+            background: #fff; padding: 16px 20px; border-radius: 8px; width: 90%; max-width: 420px;
+            box-shadow: 0 12px 28px rgba(0, 0, 0, 0.18);
+        }
+        .modal-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:12px; }
+        .secondary-btn { background: #e2e8f0; color: #1f2937; }
+        .timeline-actions { display:flex; gap:8px; align-items:center; justify-content:flex-end; }
     </style>
 </head>
 <body>
@@ -176,30 +187,42 @@
         <h3 class="section-header">Status Timeline</h3>
         <form action="/patients/<%= selected_patient.id %>/timeline" method="post">
             <table>
-                <tr><th>Status</th><th>Date</th><th>Time</th></tr>
+                <tr><th>Status</th><th>Date</th><th>Time</th><th>Extras</th></tr>
+                <% status_timeline_rows.forEach((row) => { %>
                 <tr>
-                    <td>Triage</td>
-                    <td><input type="date" name="triage_date" value="<%= triage_date %>"></td>
-                    <td><input type="time" name="triage_time" value="<%= triage_time %>" step="60"></td>
+                    <td><%= row.label %></td>
+                    <td>
+                        <% if (row.editable && row.label !== 'Delivered') { %>
+                            <input type="date" name="<%= row.name_prefix %>_date" value="<%= row.date_value %>">
+                        <% } else { %>
+                            <span class="muted"><%= row.date_value || '-' %></span>
+                        <% } %>
+                    </td>
+                    <td>
+                        <% if (row.editable && row.label !== 'Delivered') { %>
+                            <input type="time" name="<%= row.name_prefix %>_time" value="<%= row.time_value %>" step="60">
+                        <% } else { %>
+                            <span class="muted"><%= row.time_value || '-' %></span>
+                        <% } %>
+                    </td>
+                    <td>
+                        <% if (!row.editable && row.label === 'Induction' && row.event_id) { %>
+                            <label style="display:flex; align-items:center; gap:6px;">
+                                <input type="checkbox" class="induction-nst-toggle" data-event-id="<%= row.event_id %>" value="1" <%= row.induction_nst ? 'checked' : '' %>>
+                                NST
+                            </label>
+                        <% } else { %>
+                            <span class="muted">-</span>
+                        <% } %>
+                    </td>
                 </tr>
-                <tr>
-                    <td>Admitted</td>
-                    <td><input type="date" name="admitted_date" value="<%= admitted_date %>"></td>
-                    <td><input type="time" name="admitted_time" value="<%= admitted_time %>" step="60"></td>
-                </tr>
-                <tr>
-                    <td>Delivered</td>
-                    <td><input type="date" name="delivered_date" value="<%= delivered_date %>"></td>
-                    <td><input type="time" name="delivered_time" value="<%= delivered_time %>" step="60"></td>
-                </tr>
-                <tr>
-                    <td>Discharged</td>
-                    <td><input type="date" name="discharged_date" value="<%= discharged_date %>"></td>
-                    <td><input type="time" name="discharged_time" value="<%= discharged_time %>" step="60"></td>
-                </tr>
+                <% }) %>
             </table>
             <button type="submit">Save Timeline</button>
         </form>
+        <div class="timeline-actions">
+            <button type="button" id="add-action-btn">+ Add Action</button>
+        </div>
     </div>
 
 <% if (selected_patient.status === 'active') { %>
@@ -283,5 +306,107 @@
 </div>
 <% } %>
 
+<div id="add-action-modal" class="modal-backdrop" aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="add-action-title">
+        <h3 id="add-action-title" style="margin:0 0 8px 0;">Add Action</h3>
+        <form id="add-action-form" action="/patients/<%= selected_patient ? selected_patient.id : '' %>/status_events" method="post">
+            <label>Action</label>
+            <select name="status_event" id="status-event-select">
+                <option value="Triage">Triage</option>
+                <option value="Admitted">Admitted</option>
+                <option value="Delivered">Delivered</option>
+                <option value="Discharged">Discharged</option>
+                <option value="Induction">Induction</option>
+                <option value="Continuous Monitoring">Continuous Monitoring</option>
+            </select>
+            <label>After which status?</label>
+            <select name="status_after">
+                <option value="Triage">Triage</option>
+                <option value="Admitted">Admitted</option>
+                <option value="Delivered">Delivered</option>
+                <option value="Discharged">Discharged</option>
+                <option value="Induction">Induction</option>
+                <option value="Continuous Monitoring">Continuous Monitoring</option>
+            </select>
+
+            <label>Date</label>
+            <input type="date" name="status_date" value="<%= status_default_date %>">
+
+            <label>Time</label>
+            <input type="time" name="status_time" value="<%= status_default_time %>" step="60">
+
+            <label id="induction-nst-label" style="display:none;">
+                <input type="checkbox" name="induction_nst" value="1">
+                Bill Non-stress test (87.54A)
+            </label>
+
+            <div class="modal-actions">
+                <button type="button" class="secondary-btn" data-close-modal="true">Cancel</button>
+                <button type="submit">Save</button>
+            </div>
+        </form>
+    </div>
+</div>
+<script>
+    const modal = document.getElementById('add-action-modal');
+    const openBtn = document.getElementById('add-action-btn');
+    const closeButtons = document.querySelectorAll('[data-close-modal="true"]');
+
+    if (openBtn && modal) {
+        openBtn.addEventListener('click', () => {
+            modal.style.display = 'flex';
+            modal.setAttribute('aria-hidden', 'false');
+        });
+        closeButtons.forEach((btn) => {
+            btn.addEventListener('click', () => {
+                modal.style.display = 'none';
+                modal.setAttribute('aria-hidden', 'true');
+            });
+        });
+        modal.addEventListener('click', (event) => {
+            if (event.target === modal) {
+                modal.style.display = 'none';
+                modal.setAttribute('aria-hidden', 'true');
+            }
+        });
+        document.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape' && modal.getAttribute('aria-hidden') === 'false') {
+                modal.style.display = 'none';
+                modal.setAttribute('aria-hidden', 'true');
+            }
+        });
+    }
+    const statusSelect = document.getElementById('status-event-select');
+    const inductionNstLabel = document.getElementById('induction-nst-label');
+    const toggleInductionNst = () => {
+        if (!statusSelect || !inductionNstLabel) return;
+        inductionNstLabel.style.display = statusSelect.value === 'Induction' ? 'block' : 'none';
+        if (statusSelect.value !== 'Induction') {
+            const checkbox = inductionNstLabel.querySelector('input[type="checkbox"]');
+            if (checkbox) checkbox.checked = false;
+        }
+    };
+    if (statusSelect) {
+        statusSelect.addEventListener('change', toggleInductionNst);
+        toggleInductionNst();
+    }
+
+    const nstToggles = document.querySelectorAll('.induction-nst-toggle');
+    nstToggles.forEach((toggle) => {
+        toggle.addEventListener('change', () => {
+            const eventId = toggle.getAttribute('data-event-id');
+            if (!eventId) return;
+            const formData = new URLSearchParams();
+            if (toggle.checked) {
+                formData.append('induction_nst', '1');
+            }
+            fetch(`/patients/<%= selected_patient ? selected_patient.id : '' %>/status_events/${eventId}/induction_nst`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: formData.toString()
+            });
+        });
+    });
+</script>
 </body>
 </html>

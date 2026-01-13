@@ -111,6 +111,25 @@ router.get('/', requireLogin, (req, res) => {
     }));
 
     const statusRows = [];
+    const baseOrder = {
+      Triage: 1,
+      Admitted: 2,
+      Delivered: 3,
+      Discharged: 4,
+    };
+    const statusEvents = dbAll(
+      'SELECT * FROM patient_status_events WHERE patient_id = ? ORDER BY occurred_at',
+      [selectedPatient.id]
+    );
+    if (selectedPatient.second_triage_at) {
+      statusEvents.push({
+        id: `legacy-${selectedPatient.id}`,
+        patient_id: selectedPatient.id,
+        status: 'Triage',
+        occurred_at: selectedPatient.second_triage_at,
+        after_status: selectedPatient.second_triage_after || 'Triage',
+      });
+    }
     if (selectedPatient.start_datetime) {
       statusRows.push({
         time: toDate(selectedPatient.start_datetime),
@@ -119,8 +138,29 @@ router.get('/', requireLogin, (req, res) => {
         action: 'Triage',
         delivery_by: '',
         status_row: true,
+        order: baseOrder.Triage,
       });
     }
+    statusEvents.forEach((event) => {
+      const eventTime = toDate(event.occurred_at);
+      if (!eventTime) return;
+      const afterStatus = (event.after_status || '').trim() || 'Triage';
+      const afterOrder = baseOrder[afterStatus] || baseOrder.Triage;
+      const extras = [];
+      if (event.status === 'Induction' && event.induction_non_stress_test) {
+        extras.push('NST');
+      }
+      const extrasLabel = extras.length ? ` [${extras.join(', ')}]` : '';
+      statusRows.push({
+        time: eventTime,
+        doctor: null,
+        doctor_name: '',
+        action: `${event.status}${extrasLabel}`,
+        delivery_by: '',
+        status_row: true,
+        order: afterOrder + 0.5,
+      });
+    });
     if (selectedPatient.care_admitted_at) {
       statusRows.push({
         time: toDate(selectedPatient.care_admitted_at),
@@ -129,6 +169,7 @@ router.get('/', requireLogin, (req, res) => {
         action: 'Admitted',
         delivery_by: '',
         status_row: true,
+        order: baseOrder.Admitted,
       });
     }
     if (selectedPatient.care_delivered_at) {
@@ -139,6 +180,7 @@ router.get('/', requireLogin, (req, res) => {
         action: 'Delivered',
         delivery_by: selectedPatient.care_status,
         status_row: true,
+        order: baseOrder.Delivered,
       });
     }
     if (selectedPatient.discharge_datetime) {
@@ -149,6 +191,7 @@ router.get('/', requireLogin, (req, res) => {
         action: 'Discharged',
         delivery_by: '',
         status_row: true,
+        order: baseOrder.Discharged,
       });
     }
 
@@ -159,30 +202,124 @@ router.get('/', requireLogin, (req, res) => {
       triage_reassessment: 'Triage Re-assessment',
     };
     const actionRows = shiftEntries.map((slot) => {
-      const deliveryLabel = slot.delivery_by
-        ? slot.delivery_by.toLowerCase() === 'ob'
-          ? 'OB'
-          : 'Doctor'
-        : '';
+      let deliveryLabel = '';
+      if (slot.delivery_code) {
+        deliveryLabel = slot.delivery_code;
+      } else if (slot.delivery_by) {
+        deliveryLabel = slot.delivery_by.toLowerCase() === 'ob' ? '87.98B' : '87.98A';
+      }
       const rawAction = (slot.action || '').toLowerCase();
+      const extras = [];
+      if (rawAction === 'delivery') {
+        if (slot.delivery_postpartum_hemorrhage) extras.push('Postpartum hemorrhage');
+        if (slot.delivery_vacuum) extras.push('Vacuum delivery');
+        if (slot.delivery_vaginal_laceration) extras.push('Extensive vaginal laceration');
+        if (slot.delivery_shoulder_dystocia) extras.push('Shoulder dystocia');
+        if (slot.delivery_manual_placenta) extras.push('Manual removal of placenta');
+      }
+      if (rawAction === 'triage_visit' || rawAction === 'triage_reassessment') {
+        if (slot.triage_non_stress_test) extras.push('Non-stress test');
+        if (slot.triage_speculum_exam) extras.push('Speculum exam');
+      }
+      const extrasLabel = extras.length ? ` [${extras.join(', ')}]` : '';
       return {
         time: toDate(slot.start_time),
         doctor: slot.doctor,
         doctor_name: slot.doctor ? slot.doctor.name : '',
-        action: actionLabels[rawAction] || (slot.action ? slot.action.charAt(0).toUpperCase() + slot.action.slice(1) : ''),
+        action: (actionLabels[rawAction] || (slot.action ? slot.action.charAt(0).toUpperCase() + slot.action.slice(1) : '')) + extrasLabel,
         delivery_by: deliveryLabel,
         status_row: false,
+        order: 10,
       };
     });
 
     timelineEntries = statusRows.concat(actionRows).filter((e) => e.time);
-    timelineEntries.sort((a, b) => a.time - b.time);
+    timelineEntries.sort((a, b) => (a.time - b.time) || ((a.order || 0) - (b.order || 0)));
   }
 
   const triageDt = selectedPatient ? toDate(selectedPatient.start_datetime) : null;
   const admittedDt = selectedPatient ? toDate(selectedPatient.care_admitted_at) : null;
   const deliveredDt = selectedPatient ? toDate(selectedPatient.care_delivered_at) : null;
   const dischargedDt = selectedPatient ? toDate(selectedPatient.discharge_datetime) : null;
+  const extraStatusRows = [];
+  const baseOrderKeys = ['Triage', 'Admitted', 'Delivered', 'Discharged'];
+  const baseTimes = {
+    Triage: triageDt,
+    Admitted: admittedDt,
+    Delivered: deliveredDt,
+    Discharged: dischargedDt,
+  };
+
+  const statusEventsForTable = dbAll(
+    'SELECT * FROM patient_status_events WHERE patient_id = ? ORDER BY occurred_at',
+    [selectedPatient ? selectedPatient.id : -1]
+  );
+  if (selectedPatient && selectedPatient.second_triage_at) {
+    statusEventsForTable.push({
+      id: `legacy-${selectedPatient.id}`,
+      status: 'Triage',
+      occurred_at: selectedPatient.second_triage_at,
+      after_status: selectedPatient.second_triage_after || 'Triage',
+    });
+  }
+
+  statusEventsForTable.forEach((event) => {
+    const eventTime = toDate(event.occurred_at);
+    if (!eventTime) return;
+    const baseEvents = baseOrderKeys
+      .map((status) => ({ status, time: baseTimes[status] }))
+      .filter((item) => item.time)
+      .sort((a, b) => a.time - b.time);
+    let displayAfter = (event.after_status || '').trim() || 'Triage';
+    baseEvents.forEach((baseEvent) => {
+      if (baseEvent.time <= eventTime) {
+        displayAfter = baseEvent.status;
+      }
+    });
+    extraStatusRows.push({
+      id: event.id,
+      label: event.status,
+      after_status: (event.after_status || '').trim() || displayAfter,
+      date_display: formatDate(eventTime),
+      time_display: formatTime(eventTime),
+      display_after: displayAfter,
+      sort_time: eventTime,
+      induction_nst: event.induction_non_stress_test ? 1 : 0,
+    });
+  });
+
+  const statusTimelineRows = baseOrderKeys.map((status) => ({
+    label: status,
+    editable: true,
+    name_prefix: status.toLowerCase(),
+    date_value: baseTimes[status] ? formatDate(baseTimes[status]) : '',
+    time_value: baseTimes[status] ? formatTime(baseTimes[status]) : '',
+  }));
+
+  extraStatusRows
+    .sort((a, b) => a.sort_time - b.sort_time)
+    .forEach((row) => {
+      const insertAfter = row.after_status || row.display_after;
+      let insertIndex = -1;
+      statusTimelineRows.forEach((existing, idx) => {
+        if (existing.label === insertAfter) {
+          insertIndex = idx;
+        }
+      });
+      const insertion = {
+        label: row.label,
+        editable: false,
+        event_id: row.id,
+        date_value: row.date_display,
+        time_value: row.time_display,
+        induction_nst: row.induction_nst,
+      };
+      if (insertIndex >= 0) {
+        statusTimelineRows.splice(insertIndex + 1, 0, insertion);
+      } else {
+        statusTimelineRows.push(insertion);
+      }
+    });
 
   const selectedWithDisplay = selectedPatient
     ? {
@@ -214,6 +351,7 @@ router.get('/', requireLogin, (req, res) => {
     status_default_time: formatTime(statusDtDefault),
     triage_date: triageDt ? formatDate(triageDt) : '',
     triage_time: triageDt ? formatTime(triageDt) : '',
+    status_timeline_rows: statusTimelineRows,
     admitted_date: admittedDt ? formatDate(admittedDt) : '',
     admitted_time: admittedDt ? formatTime(admittedDt) : '',
     delivered_date: deliveredDt ? formatDate(deliveredDt) : '',
@@ -345,11 +483,28 @@ router.get('/patients/:pid/optimized_pdf', requireLogin, (req, res) => {
   }
 
   const startPoint = toDate(patient.start_datetime) || admitted;
+  const triageEvents = dbAll(
+    'SELECT occurred_at FROM patient_status_events WHERE patient_id = ? AND status = ?',
+    [pid, 'Triage']
+  );
+  let triageWindowEnd = delivered;
+  triageEvents.forEach((event) => {
+    const eventTime = toDate(event.occurred_at);
+    if (eventTime && delivered && eventTime > delivered) {
+      triageWindowEnd = !triageWindowEnd || eventTime > triageWindowEnd ? eventTime : triageWindowEnd;
+    }
+  });
+  if (patient.second_triage_at) {
+    const legacy = toDate(patient.second_triage_at);
+    if (legacy && delivered && legacy > delivered) {
+      triageWindowEnd = !triageWindowEnd || legacy > triageWindowEnd ? legacy : triageWindowEnd;
+    }
+  }
   const patientSlots = dbAll(
     `SELECT * FROM shift_slots
      WHERE patient_id = ? AND start_time >= ? AND start_time <= ?
      ORDER BY start_time`,
-    [pid, formatLocalDateTime(startPoint), formatLocalDateTime(delivered)]
+    [pid, formatLocalDateTime(startPoint), formatLocalDateTime(triageWindowEnd)]
   );
 
   const recommendations = buildOptimizedBillings(
@@ -440,11 +595,28 @@ router.get('/patients/:pid/confirmed_pdf', requireLogin, (req, res) => {
       return res.redirect('/?view=archived');
     }
     const startPoint = toDate(patient.start_datetime) || admitted;
+    const triageEvents = dbAll(
+      'SELECT occurred_at FROM patient_status_events WHERE patient_id = ? AND status = ?',
+      [pid, 'Triage']
+    );
+    let triageWindowEnd = delivered;
+    triageEvents.forEach((event) => {
+      const eventTime = toDate(event.occurred_at);
+      if (eventTime && delivered && eventTime > delivered) {
+        triageWindowEnd = !triageWindowEnd || eventTime > triageWindowEnd ? eventTime : triageWindowEnd;
+      }
+    });
+    if (patient.second_triage_at) {
+      const legacy = toDate(patient.second_triage_at);
+      if (legacy && delivered && legacy > delivered) {
+        triageWindowEnd = !triageWindowEnd || legacy > triageWindowEnd ? legacy : triageWindowEnd;
+      }
+    }
     const patientSlots = dbAll(
       `SELECT * FROM shift_slots
        WHERE patient_id = ? AND start_time >= ? AND start_time <= ?
        ORDER BY start_time`,
-      [pid, formatLocalDateTime(startPoint), formatLocalDateTime(delivered)]
+      [pid, formatLocalDateTime(startPoint), formatLocalDateTime(triageWindowEnd)]
     );
     const recommendations = buildOptimizedBillings(
       patient,
@@ -589,6 +761,56 @@ router.post('/patients/:pid/timeline', requireLogin, (req, res) => {
     optimizeBillings(pid);
   }
 
+  return res.redirect(`/?view=active&selected_patient=${pid}`);
+});
+
+router.post('/patients/:pid/status_events', requireLogin, (req, res) => {
+  const pid = parseInt(req.params.pid, 10);
+  const patient = dbGet('SELECT * FROM patients WHERE id = ?', [pid]);
+  if (!patient || patient.status !== 'active') {
+    return res.redirect('/?view=active');
+  }
+
+  const status = (req.body.status_event || '').trim();
+  const afterStatus = (req.body.status_after || '').trim();
+  const eventDate = (req.body.status_date || '').trim();
+  const eventTime = (req.body.status_time || '').trim();
+
+  if (!eventDate || !status) {
+    return res.redirect(`/?view=active&selected_patient=${pid}`);
+  }
+
+  const eventDt = parseDateTime(eventDate, eventTime);
+  const inductionNst = status === 'Induction' && req.body.induction_nst ? 1 : 0;
+  const shiftDoctor = getShiftDoctor();
+  dbRun(
+    `INSERT INTO patient_status_events
+     (patient_id, status, occurred_at, after_status, induction_non_stress_test, doctor_id)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [pid, status, formatLocalDateTime(eventDt), afterStatus || null, inductionNst, shiftDoctor ? shiftDoctor.id : null]
+  );
+
+  return res.redirect(`/?view=active&selected_patient=${pid}`);
+});
+
+router.post('/patients/:pid/status_events/:eventId/induction_nst', requireLogin, (req, res) => {
+  const pid = parseInt(req.params.pid, 10);
+  const eventId = parseInt(req.params.eventId, 10);
+  if (Number.isNaN(pid) || Number.isNaN(eventId)) {
+    return res.redirect('/?view=active');
+  }
+  const event = dbGet(
+    'SELECT * FROM patient_status_events WHERE id = ? AND patient_id = ?',
+    [eventId, pid]
+  );
+  if (!event || event.status !== 'Induction') {
+    return res.redirect(`/?view=active&selected_patient=${pid}`);
+  }
+  const enabled = req.body.induction_nst ? 1 : 0;
+  dbRun(
+    'UPDATE patient_status_events SET induction_non_stress_test = ? WHERE id = ?',
+    [enabled, eventId]
+  );
   return res.redirect(`/?view=active&selected_patient=${pid}`);
 });
 

@@ -143,9 +143,21 @@ const ensureSchema = () => {
       FOREIGN KEY (doctor_id) REFERENCES doctors(id) ON DELETE SET NULL
     );
 
+    CREATE TABLE IF NOT EXISTS patient_status_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      patient_id INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      occurred_at TEXT NOT NULL,
+      after_status TEXT,
+      doctor_id INTEGER,
+      induction_non_stress_test INTEGER DEFAULT 0,
+      FOREIGN KEY (patient_id) REFERENCES patients(id) ON DELETE CASCADE
+    );
+
     CREATE INDEX IF NOT EXISTS idx_shift_slots_start_time ON shift_slots(start_time);
     CREATE INDEX IF NOT EXISTS idx_billings_patient_id ON billings(patient_id);
     CREATE INDEX IF NOT EXISTS idx_confirmed_billings_patient_id ON confirmed_billings(patient_id);
+    CREATE INDEX IF NOT EXISTS idx_patient_status_events_patient_id ON patient_status_events(patient_id);
   `);
 
   const patientColumns = dbAll('PRAGMA table_info(patients)');
@@ -153,11 +165,67 @@ const ensureSchema = () => {
   if (!hasBillingNote) {
     db.exec('ALTER TABLE patients ADD COLUMN billing_note TEXT');
   }
+  const hasSecondTriage = patientColumns.some((col) => col.name === 'second_triage_at');
+  if (!hasSecondTriage) {
+    db.exec('ALTER TABLE patients ADD COLUMN second_triage_at TEXT');
+  }
+  const hasSecondTriageAfter = patientColumns.some((col) => col.name === 'second_triage_after');
+  if (!hasSecondTriageAfter) {
+    db.exec('ALTER TABLE patients ADD COLUMN second_triage_after TEXT');
+  }
+
+  const statusEventColumns = dbAll('PRAGMA table_info(patient_status_events)');
+  if (statusEventColumns.length) {
+    const hasInductionNst = statusEventColumns.some((col) => col.name === 'induction_non_stress_test');
+    if (!hasInductionNst) {
+      db.exec('ALTER TABLE patient_status_events ADD COLUMN induction_non_stress_test INTEGER DEFAULT 0');
+    }
+    const hasEventDoctor = statusEventColumns.some((col) => col.name === 'doctor_id');
+    if (!hasEventDoctor) {
+      db.exec('ALTER TABLE patient_status_events ADD COLUMN doctor_id INTEGER');
+    }
+  }
 
   const shiftColumns = dbAll('PRAGMA table_info(shift_slots)');
   const hasLocked = shiftColumns.some((col) => col.name === 'locked');
   if (!hasLocked) {
     db.exec('ALTER TABLE shift_slots ADD COLUMN locked INTEGER DEFAULT 0');
+  }
+  const hasTriageNst = shiftColumns.some((col) => col.name === 'triage_non_stress_test');
+  if (!hasTriageNst) {
+    db.exec('ALTER TABLE shift_slots ADD COLUMN triage_non_stress_test INTEGER DEFAULT 0');
+  }
+  const hasTriageSpeculum = shiftColumns.some((col) => col.name === 'triage_speculum_exam');
+  if (!hasTriageSpeculum) {
+    db.exec('ALTER TABLE shift_slots ADD COLUMN triage_speculum_exam INTEGER DEFAULT 0');
+  }
+  const hasDeliveryCode = shiftColumns.some((col) => col.name === 'delivery_code');
+  if (!hasDeliveryCode) {
+    db.exec('ALTER TABLE shift_slots ADD COLUMN delivery_code TEXT');
+  }
+  const hasDeliveryTime = shiftColumns.some((col) => col.name === 'delivery_time');
+  if (!hasDeliveryTime) {
+    db.exec('ALTER TABLE shift_slots ADD COLUMN delivery_time TEXT');
+  }
+  const hasDeliveryHemorrhage = shiftColumns.some((col) => col.name === 'delivery_postpartum_hemorrhage');
+  if (!hasDeliveryHemorrhage) {
+    db.exec('ALTER TABLE shift_slots ADD COLUMN delivery_postpartum_hemorrhage INTEGER DEFAULT 0');
+  }
+  const hasDeliveryVacuum = shiftColumns.some((col) => col.name === 'delivery_vacuum');
+  if (!hasDeliveryVacuum) {
+    db.exec('ALTER TABLE shift_slots ADD COLUMN delivery_vacuum INTEGER DEFAULT 0');
+  }
+  const hasDeliveryLaceration = shiftColumns.some((col) => col.name === 'delivery_vaginal_laceration');
+  if (!hasDeliveryLaceration) {
+    db.exec('ALTER TABLE shift_slots ADD COLUMN delivery_vaginal_laceration INTEGER DEFAULT 0');
+  }
+  const hasDeliveryDystocia = shiftColumns.some((col) => col.name === 'delivery_shoulder_dystocia');
+  if (!hasDeliveryDystocia) {
+    db.exec('ALTER TABLE shift_slots ADD COLUMN delivery_shoulder_dystocia INTEGER DEFAULT 0');
+  }
+  const hasDeliveryPlacenta = shiftColumns.some((col) => col.name === 'delivery_manual_placenta');
+  if (!hasDeliveryPlacenta) {
+    db.exec('ALTER TABLE shift_slots ADD COLUMN delivery_manual_placenta INTEGER DEFAULT 0');
   }
 };
 

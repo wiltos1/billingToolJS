@@ -117,6 +117,17 @@
         <p class="muted"><%= optimization_error %></p>
         <% } %>
 
+        <% if (!optimization_error && optimization_notes && optimization_notes.length) { %>
+        <div class="card" style="margin-top:12px;">
+            <strong>Optimization Notes</strong>
+            <ul style="margin:6px 0 0; padding-left:18px;">
+                <% optimization_notes.forEach((note) => { %>
+                <li><%= note %></li>
+                <% }) %>
+            </ul>
+        </div>
+        <% } %>
+
         <% if (!optimization_error && recommendations.length) { %>
         <table>
             <tr><th>Time</th><th>Code</th><th>Modifier</th><th>Doctor</th></tr>

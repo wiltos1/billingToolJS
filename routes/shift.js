@@ -13,6 +13,69 @@ const {
 
 const router = express.Router();
 
+const getTriageAction = (patientId, doctorId) => {
+  if (!patientId || !doctorId) return 'triage_visit';
+  const seenByOther = dbGet(
+    `SELECT 1 FROM shift_slots
+     WHERE patient_id = ? AND doctor_id != ? AND action IN ('triage_visit', 'triage_reassessment')
+     LIMIT 1`,
+    [patientId, doctorId]
+  );
+  return seenByOther ? 'triage_reassessment' : 'triage_visit';
+};
+
+const getStatusAtTime = (patient, slotTime) => {
+  if (!patient || !slotTime) return 'Triage';
+  const events = [];
+  const triageAt = patient.start_datetime ? toDate(patient.start_datetime) : null;
+  const admittedAt = patient.care_admitted_at ? toDate(patient.care_admitted_at) : null;
+  const deliveredAt = patient.care_delivered_at ? toDate(patient.care_delivered_at) : null;
+  const dischargedAt = patient.discharge_datetime ? toDate(patient.discharge_datetime) : null;
+  const extraEvents = dbAll(
+    'SELECT status, occurred_at, after_status FROM patient_status_events WHERE patient_id = ?',
+    [patient.id]
+  );
+
+  const baseOrder = {
+    Triage: 1,
+    Admitted: 2,
+    Delivered: 3,
+    Discharged: 4,
+  };
+
+  if (triageAt) events.push({ time: triageAt, status: 'Triage', order: baseOrder.Triage });
+  if (admittedAt) events.push({ time: admittedAt, status: 'Admitted', order: baseOrder.Admitted });
+  if (deliveredAt) events.push({ time: deliveredAt, status: 'Delivered', order: baseOrder.Delivered });
+  if (dischargedAt) events.push({ time: dischargedAt, status: 'Discharged', order: baseOrder.Discharged });
+  extraEvents.forEach((event) => {
+    const eventTime = toDate(event.occurred_at);
+    if (!eventTime) return;
+    if (!baseOrder[event.status]) return;
+    const afterStatus = (event.after_status || '').trim() || 'Triage';
+    const afterOrder = baseOrder[afterStatus] || baseOrder.Triage;
+    events.push({ time: eventTime, status: event.status, order: afterOrder + 0.5 });
+  });
+  if (patient.second_triage_at) {
+    const secondTriageAt = toDate(patient.second_triage_at);
+    const secondTriageAfter = (patient.second_triage_after || '').trim() || 'Triage';
+    if (secondTriageAt) {
+      const afterOrder = baseOrder[secondTriageAfter] || baseOrder.Triage;
+      events.push({ time: secondTriageAt, status: 'Triage', order: afterOrder + 0.5 });
+    }
+  }
+
+  if (!events.length) return 'Triage';
+
+  events.sort((a, b) => (a.time - b.time) || (a.order - b.order));
+  let status = 'Triage';
+  events.forEach((event) => {
+    if (event.time <= slotTime) {
+      status = event.status;
+    }
+  });
+  return status;
+};
+
 router.get('/shift_grid', requireLogin, (req, res) => {
   cleanupOldShiftData();
   const windowId = parseInt(req.query.window_id, 10);
@@ -71,10 +134,44 @@ router.get('/shift_grid', requireLogin, (req, res) => {
   const seen = new Set();
   activePatients.concat(preservedPatients).forEach((p) => {
     if (!seen.has(p.id)) {
-      displayPatients.push(p);
+      displayPatients.push({
+        ...p,
+        triage_action: getTriageAction(p.id, shiftDoctor.id),
+      });
       seen.add(p.id);
     }
   });
+
+  if (displayPatients.length) {
+    const ids = displayPatients.map((p) => p.id);
+    const placeholders = ids.map(() => '?').join(',');
+    const statusEvents = dbAll(
+      `SELECT * FROM patient_status_events WHERE patient_id IN (${placeholders})`,
+      ids
+    );
+    const eventsByPatient = {};
+    statusEvents.forEach((event) => {
+      if (!eventsByPatient[event.patient_id]) {
+        eventsByPatient[event.patient_id] = [];
+      }
+      eventsByPatient[event.patient_id].push({
+        status: event.status,
+        occurred_at: event.occurred_at,
+        after_status: event.after_status,
+      });
+    });
+    displayPatients.forEach((patient) => {
+      const extra = eventsByPatient[patient.id] || [];
+      if (patient.second_triage_at) {
+        extra.push({
+          status: 'Triage',
+          occurred_at: patient.second_triage_at,
+          after_status: patient.second_triage_after || 'Triage',
+        });
+      }
+      patient.status_events = extra;
+    });
+  }
 
   return res.render('shift', {
     session: req.session,
@@ -148,17 +245,10 @@ router.post('/shift_grid', requireLogin, (req, res) => {
 
     const actionVal = (req.body[`slot_action_${ts}`] || '').trim().toLowerCase();
     let deliveryBy = null;
-    const statusAtTime = (() => {
-      const admittedAt = patient.care_admitted_at ? toDate(patient.care_admitted_at) : null;
-      const deliveredAt = patient.care_delivered_at ? toDate(patient.care_delivered_at) : null;
-      const dischargedAt = patient.discharge_datetime ? toDate(patient.discharge_datetime) : null;
-      if (dischargedAt && slotTime >= dischargedAt) return 'Discharged';
-      if (deliveredAt && slotTime >= deliveredAt) return 'Delivered';
-      if (admittedAt && slotTime >= admittedAt) return 'Admitted';
-      return 'Triage';
-    })();
+    const statusAtTime = getStatusAtTime(patient, slotTime);
+    const triageAction = getTriageAction(patient.id, shiftDoctor.id);
     const allowedActionsByStatus = {
-      Triage: ['triage_visit', 'triage_reassessment'],
+      Triage: [triageAction],
       Admitted: ['attended', 'delivery'],
     };
     const allowedActions = allowedActionsByStatus[statusAtTime] || [];
@@ -169,12 +259,20 @@ router.post('/shift_grid', requireLogin, (req, res) => {
       }
       return;
     }
+    if (!allowedActions.length && actionVal) {
+      return;
+    }
     if (allowedActions.length > 0 && !allowedActions.includes(actionVal)) {
       return;
     }
 
+    const isTriageAction = actionVal === 'triage_visit' || actionVal === 'triage_reassessment';
+    const triageNonStress = isTriageAction ? (req.body[`slot_extra_nst_${ts}`] ? 1 : 0) : 0;
+    const triageSpeculum = isTriageAction ? (req.body[`slot_extra_speculum_${ts}`] ? 1 : 0) : 0;
+
     if (actionVal === 'delivery') {
-      deliveryBy = (req.body[`slot_delivery_${ts}`] || '').trim().toLowerCase() || null;
+      const deliveryCodeInput = (req.body[`slot_delivery_code_${ts}`] || '').trim();
+      const deliveryCode = deliveryCodeInput || '87.98A';
       const deliveryExact = (req.body[`slot_delivery_time_${ts}`] || '').trim();
       let exactDt = slotTime;
       if (deliveryExact) {
@@ -185,20 +283,83 @@ router.post('/shift_grid', requireLogin, (req, res) => {
         'UPDATE patients SET care_status = ?, care_delivered_at = ? WHERE id = ?',
         ['Delivered', formatLocalDateTime(exactDt), patient.id]
       );
+      deliveryBy = null;
+      const deliveryTime = formatLocalDateTime(exactDt);
+      const postpartum = req.body[`slot_delivery_pph_${ts}`] ? 1 : 0;
+      const vacuum = req.body[`slot_delivery_vacuum_${ts}`] ? 1 : 0;
+      const laceration = req.body[`slot_delivery_laceration_${ts}`] ? 1 : 0;
+      const dystocia = req.body[`slot_delivery_dystocia_${ts}`] ? 1 : 0;
+      const placenta = req.body[`slot_delivery_placenta_${ts}`] ? 1 : 0;
+      if (existingSlot) {
+        dbRun(
+          `UPDATE shift_slots
+           SET patient_id = ?, action = ?, delivery_by = ?, delivery_code = ?, delivery_time = ?,
+               delivery_postpartum_hemorrhage = ?, delivery_vacuum = ?, delivery_vaginal_laceration = ?,
+               delivery_shoulder_dystocia = ?, delivery_manual_placenta = ?,
+               triage_non_stress_test = 0, triage_speculum_exam = 0
+           WHERE id = ?`,
+          [
+            patient.id,
+            actionVal,
+            deliveryBy,
+            deliveryCode,
+            deliveryTime,
+            postpartum,
+            vacuum,
+            laceration,
+            dystocia,
+            placenta,
+            existingSlot.id,
+          ]
+        );
+        return;
+      }
+      if (allowedActions.length > 0) {
+        dbRun(
+          `INSERT INTO shift_slots
+           (doctor_id, patient_id, start_time, action, delivery_by, delivery_code, delivery_time,
+            delivery_postpartum_hemorrhage, delivery_vacuum, delivery_vaginal_laceration,
+            delivery_shoulder_dystocia, delivery_manual_placenta)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            shiftDoctor.id,
+            patient.id,
+            slotTimeStr,
+            actionVal,
+            deliveryBy,
+            deliveryCode,
+            deliveryTime,
+            postpartum,
+            vacuum,
+            laceration,
+            dystocia,
+            placenta,
+          ]
+        );
+      }
+      return;
     }
 
     if (existingSlot) {
       dbRun(
-        'UPDATE shift_slots SET patient_id = ?, action = ?, delivery_by = ? WHERE id = ?',
-        [patient.id, actionVal, deliveryBy, existingSlot.id]
+        `UPDATE shift_slots
+         SET patient_id = ?, action = ?, delivery_by = ?,
+             triage_non_stress_test = ?, triage_speculum_exam = ?,
+             delivery_code = NULL, delivery_time = NULL,
+             delivery_postpartum_hemorrhage = 0, delivery_vacuum = 0, delivery_vaginal_laceration = 0,
+             delivery_shoulder_dystocia = 0, delivery_manual_placenta = 0
+         WHERE id = ?`,
+        [patient.id, actionVal, deliveryBy, triageNonStress, triageSpeculum, existingSlot.id]
       );
       return;
     }
 
     if (allowedActions.length > 0) {
       dbRun(
-        'INSERT INTO shift_slots (doctor_id, patient_id, start_time, action, delivery_by) VALUES (?, ?, ?, ?, ?)',
-        [shiftDoctor.id, patient.id, slotTimeStr, actionVal, deliveryBy]
+        `INSERT INTO shift_slots
+         (doctor_id, patient_id, start_time, action, delivery_by, triage_non_stress_test, triage_speculum_exam)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [shiftDoctor.id, patient.id, slotTimeStr, actionVal, deliveryBy, triageNonStress, triageSpeculum]
       );
     }
   });
