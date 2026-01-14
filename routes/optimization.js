@@ -5,7 +5,7 @@ const {
   toDate,
   formatDisplay,
   formatLocalDateTime,
-  getActiveShiftWindows,
+  getShiftWindowsForRange,
   optimizeBillings,
 } = require('../services/helpers');
 const { buildOptimizedBillings } = require('../services/rules');
@@ -123,7 +123,7 @@ router.get('/optimization', requireLogin, (req, res) => {
          ORDER BY start_time`,
         [selectedPatient.id, formatLocalDateTime(startPoint), formatLocalDateTime(triageWindowEnd)]
       );
-      const activeShiftWindows = getActiveShiftWindows();
+      const activeShiftWindows = getShiftWindowsForRange(admitted, delivered);
       const activeShiftWindow = activeShiftWindows.length ? activeShiftWindows[0] : null;
       recommendations = buildOptimizedBillings(
         selectedPatient,
@@ -237,7 +237,7 @@ router.get('/optimization', requireLogin, (req, res) => {
         } else if (has0303AR) {
           optimizationNotes.push('OB/VBAC deliveries use 03.03AR for attended slots instead of 13.99JA.');
         } else if (!activeShiftWindow) {
-          optimizationNotes.push('No active shift window; 13.99JA and callback billing are not generated.');
+          optimizationNotes.push('No shift window overlaps the admitted-to-delivered range; 13.99JA and callback billing are not generated.');
         }
 
         if (activeShiftWindows.length) {
@@ -486,7 +486,7 @@ router.post('/optimization/:pid/confirm', requireLogin, (req, res) => {
   const recommendations = buildOptimizedBillings(
     patient,
     patientSlots,
-    getActiveShiftWindows()
+    getShiftWindowsForRange(admitted, delivered)
   );
   if (!recommendations.length) {
     return res.redirect('/optimization?selected_patient=' + pid + '&opt_error=' + encodeURIComponent('No eligible billing slots found within the Admitted-to-Delivered window.'));

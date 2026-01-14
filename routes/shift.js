@@ -71,7 +71,9 @@ const getStatusAtTime = (patient, slotTime) => {
   events.sort((a, b) => (a.time - b.time) || (a.order - b.order));
   let status = 'Triage';
   events.forEach((event) => {
-    if (event.time <= slotTime) {
+    const requiresStrict = event.status === 'Delivered' || event.status === 'Discharged';
+    const qualifies = requiresStrict ? event.time < slotTime : event.time <= slotTime;
+    if (qualifies) {
       status = event.status;
     }
   });

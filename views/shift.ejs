@@ -222,7 +222,9 @@
             events.sort((a, b) => (a.time - b.time) || (a.order - b.order));
             let status = '';
             events.forEach((event) => {
-                if (event.time <= slotTime) {
+                const requiresStrict = event.status === 'Delivered' || event.status === 'Discharged';
+                const qualifies = requiresStrict ? event.time < slotTime : event.time <= slotTime;
+                if (qualifies) {
                     status = event.status;
                 }
             });
@@ -310,6 +312,15 @@
             placeholder.value = '';
             placeholder.textContent = '--';
             actionSelect.appendChild(placeholder);
+            if (currentAction && !actions.some((action) => action.value === currentAction)) {
+                const fallback = ACTION_CONFIG[currentAction] || { label: currentAction, needsTime: false, needsDelivery: false };
+                actions = actions.concat([{
+                    value: currentAction,
+                    label: fallback.label,
+                    needsTime: fallback.needsTime,
+                    needsDelivery: fallback.needsDelivery
+                }]);
+            }
             actions.forEach((action) => {
                 const opt = document.createElement('option');
                 opt.value = action.value;

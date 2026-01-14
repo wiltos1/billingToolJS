@@ -82,6 +82,21 @@ const getActiveShiftWindows = () => {
   );
 };
 
+const getShiftWindowsForRange = (startDate, endDate) => {
+  const startStr = formatLocalDateTime(startDate);
+  const endStr = formatLocalDateTime(endDate);
+  if (!startStr || !endStr) {
+    return getActiveShiftWindows();
+  }
+  const windows = dbAll(
+    `SELECT * FROM shift_windows
+     WHERE start_datetime <= ? AND end_datetime >= ?
+     ORDER BY start_datetime DESC`,
+    [endStr, startStr]
+  );
+  return windows.length ? windows : getActiveShiftWindows();
+};
+
 const splitWindowIntoDays = (startDate, endDate) => {
   const segments = [];
   let current = new Date(startDate);
@@ -161,6 +176,7 @@ module.exports = {
   getShiftDoctor,
   getActiveShiftWindow,
   getActiveShiftWindows,
+  getShiftWindowsForRange,
   splitWindowIntoDays,
   requireLogin,
   optimizeBillings,
