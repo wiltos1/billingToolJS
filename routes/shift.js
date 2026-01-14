@@ -52,7 +52,9 @@ const getStatusAtTime = (patient, slotTime) => {
     if (!eventTime) return;
     if (!baseOrder[event.status]) return;
     const afterStatus = (event.after_status || '').trim() || 'Triage';
-    const afterOrder = baseOrder[afterStatus] || baseOrder.Triage;
+    const afterOrder = afterStatus.startsWith('event:')
+      ? baseOrder[event.status]
+      : (baseOrder[afterStatus] || baseOrder.Triage);
     events.push({ time: eventTime, status: event.status, order: afterOrder + 0.5 });
   });
   if (patient.second_triage_at) {

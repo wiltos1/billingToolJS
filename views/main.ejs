@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <title>Patient Billing Optimizer</title>
+    <link rel="icon" href="/static/favicon.png">
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -62,6 +63,8 @@
         .modal-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:12px; }
         .secondary-btn { background: #e2e8f0; color: #1f2937; }
         .timeline-actions { display:flex; gap:8px; align-items:center; justify-content:flex-end; }
+        .save-indicator { font-size: 0.85em; font-weight: bold; color: #2e7d32; }
+        .warning-banner { display:none; margin:8px 0; padding:8px 10px; border-radius:6px; background:#fff3cd; color:#7c5d00; border:1px solid #f0d58c; }
     </style>
 </head>
 <body>
@@ -185,28 +188,38 @@
     <hr class="section-divider">
     <div class="card-actions">
         <h3 class="section-header">Status Timeline</h3>
-        <form action="/patients/<%= selected_patient.id %>/timeline" method="post">
+        <div class="save-indicator" id="timeline-save-indicator">Saved: --</div>
+        <div class="warning-banner" id="timeline-warning"></div>
+        <form id="status-timeline-form" action="/patients/<%= selected_patient.id %>/timeline" method="post">
             <table>
                 <tr><th>Status</th><th>Date</th><th>Time</th><th>Extras</th></tr>
                 <% status_timeline_rows.forEach((row) => { %>
                 <tr>
                     <td><%= row.label %></td>
                     <td>
-                        <% if (row.editable && row.label !== 'Delivered') { %>
-                            <input type="date" name="<%= row.name_prefix %>_date" value="<%= row.date_value %>">
+                        <% if (row.editable && row.raw_status !== 'Delivered') { %>
+                            <% if (row.event_id) { %>
+                                <input type="date" value="<%= row.date_value %>" data-event-id="<%= row.event_id %>">
+                            <% } else { %>
+                                <input type="date" name="<%= row.name_prefix %>_date" value="<%= row.date_value %>">
+                            <% } %>
                         <% } else { %>
                             <span class="muted"><%= row.date_value || '-' %></span>
                         <% } %>
                     </td>
                     <td>
-                        <% if (row.editable && row.label !== 'Delivered') { %>
-                            <input type="time" name="<%= row.name_prefix %>_time" value="<%= row.time_value %>" step="60">
+                        <% if (row.editable && row.raw_status !== 'Delivered') { %>
+                            <% if (row.event_id) { %>
+                                <input type="time" value="<%= row.time_value %>" step="60" data-event-id="<%= row.event_id %>">
+                            <% } else { %>
+                                <input type="time" name="<%= row.name_prefix %>_time" value="<%= row.time_value %>" step="60">
+                            <% } %>
                         <% } else { %>
                             <span class="muted"><%= row.time_value || '-' %></span>
                         <% } %>
                     </td>
                     <td>
-                        <% if (!row.editable && row.label === 'Induction' && row.event_id) { %>
+                        <% if (row.raw_status === 'Induction' && row.event_id) { %>
                             <label style="display:flex; align-items:center; gap:6px;">
                                 <input type="checkbox" class="induction-nst-toggle" data-event-id="<%= row.event_id %>" value="1" <%= row.induction_nst ? 'checked' : '' %>>
                                 NST
@@ -218,27 +231,17 @@
                 </tr>
                 <% }) %>
             </table>
-            <button type="submit">Save Timeline</button>
         </form>
         <div class="timeline-actions">
             <button type="button" id="add-action-btn">+ Add Action</button>
         </div>
     </div>
 
-<% if (selected_patient.status === 'active') { %>
-
-<% if (patient_doctors.length) { %>
-<h3>Doctors Involved</h3>
-<table>
-<tr><th>ID</th><th>Doctor</th></tr>
-<% patient_doctors.forEach((d) => { %>
-<tr><td><%= d.id %></td><td>Dr. <%= d.name %></td></tr>
-<% }) %>
-</table>
-<% } %>
-
 <hr class="section-divider">
-<h3 class="section-header">Patient Timeline</h3>
+<h3 class="section-header">
+    Patient Timeline
+    <button type="button" id="timeline-refresh-btn" style="margin-left:auto;">&#10227;</button>
+</h3>
 <% if (timeline_entries.length) { %>
 <table>
 <tr><th>Date/Time</th><th>Doctor</th><th>Action / Status</th></tr>
@@ -258,6 +261,18 @@
 </table>
 <% } else { %>
 <p class="muted">No timeline events for this patient yet.</p>
+<% } %>
+
+<% if (selected_patient.status === 'active') { %>
+
+<% if (patient_doctors.length) { %>
+<h3>Doctors Involved</h3>
+<table>
+<tr><th>ID</th><th>Doctor</th></tr>
+<% patient_doctors.forEach((d) => { %>
+<tr><td><%= d.id %></td><td>Dr. <%= d.name %></td></tr>
+<% }) %>
+</table>
 <% } %>
 
 <% if (patient_billings.length) { %>
@@ -321,12 +336,9 @@
             </select>
             <label>After which status?</label>
             <select name="status_after">
-                <option value="Triage">Triage</option>
-                <option value="Admitted">Admitted</option>
-                <option value="Delivered">Delivered</option>
-                <option value="Discharged">Discharged</option>
-                <option value="Induction">Induction</option>
-                <option value="Continuous Monitoring">Continuous Monitoring</option>
+                <% add_action_targets.forEach((target) => { %>
+                <option value="<%= target.value %>"><%= target.label %></option>
+                <% }) %>
             </select>
 
             <label>Date</label>
@@ -407,6 +419,137 @@
             });
         });
     });
+
+    const timelineIndicator = document.getElementById('timeline-save-indicator');
+    const timelineWarning = document.getElementById('timeline-warning');
+    const updateTimelineIndicator = (label) => {
+        if (!timelineIndicator) return;
+        if (label) {
+            timelineIndicator.textContent = label;
+            return;
+        }
+        const now = new Date();
+        const hh = String(now.getHours()).padStart(2, '0');
+        const mm = String(now.getMinutes()).padStart(2, '0');
+        const ss = String(now.getSeconds()).padStart(2, '0');
+        timelineIndicator.textContent = `Saved: ${hh}:${mm}:${ss}`;
+    };
+    updateTimelineIndicator();
+
+    const statusForm = document.getElementById('status-timeline-form');
+    const selectedPatientId = '<%= selected_patient ? selected_patient.id : '' %>';
+    const currentView = '<%= current_view %>';
+    const formatToday = () => {
+        const now = new Date();
+        const yyyy = now.getFullYear();
+        const mm = String(now.getMonth() + 1).padStart(2, '0');
+        const dd = String(now.getDate()).padStart(2, '0');
+        return `${yyyy}-${mm}-${dd}`;
+    };
+    const ensureDateForTimeInput = (input) => {
+        if (!input || input.type !== 'time') return;
+        const row = input.closest('tr');
+        if (!row) return;
+        const dateInput = row.querySelector('input[type="date"]');
+        if (dateInput && !dateInput.value) {
+            dateInput.value = formatToday();
+        }
+    };
+    const parseRowDateTime = (row) => {
+        if (!row) return null;
+        const dateInput = row.querySelector('input[type="date"]');
+        const timeInput = row.querySelector('input[type="time"]');
+        const dateSpan = row.querySelector('td:nth-child(2) .muted');
+        const timeSpan = row.querySelector('td:nth-child(3) .muted');
+        const dateVal = dateInput ? dateInput.value : (dateSpan ? dateSpan.textContent.trim() : '');
+        const timeVal = timeInput ? timeInput.value : (timeSpan ? timeSpan.textContent.trim() : '');
+        if (!dateVal || dateVal === '-') return null;
+        const timePart = timeVal && timeVal !== '-' ? timeVal : '00:00';
+        const parsed = new Date(`${dateVal}T${timePart}`);
+        return Number.isNaN(parsed.valueOf()) ? null : parsed;
+    };
+    const validateTimelineOrder = () => {
+        if (!statusForm) return true;
+        const rows = Array.from(statusForm.querySelectorAll('table tr')).slice(1);
+        let lastTime = null;
+        let lastLabel = '';
+        for (const row of rows) {
+            const labelCell = row.querySelector('td');
+            const label = labelCell ? labelCell.textContent.trim() : '';
+            const rowTime = parseRowDateTime(row);
+            if (!rowTime) continue;
+            if (lastTime && rowTime < lastTime) {
+                if (timelineWarning) {
+                    timelineWarning.textContent = `Timeline must be chronological. ${label} cannot be before ${lastLabel}.`;
+                    timelineWarning.style.display = 'block';
+                }
+                return false;
+            }
+            lastTime = rowTime;
+            lastLabel = label;
+        }
+        if (timelineWarning) {
+            timelineWarning.textContent = '';
+            timelineWarning.style.display = 'none';
+        }
+        return true;
+    };
+    const saveTimelineForm = () => {
+        if (!statusForm) return;
+        if (!validateTimelineOrder()) return;
+        updateTimelineIndicator('Saving...');
+        const formData = new URLSearchParams(new FormData(statusForm));
+        fetch(statusForm.action, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: formData.toString()
+        })
+            .finally(() => updateTimelineIndicator());
+    };
+
+    const baseInputs = statusForm ? statusForm.querySelectorAll('input[name$="_date"], input[name$="_time"]') : [];
+    baseInputs.forEach((input) => {
+        if (!input.hasAttribute('data-event-id')) {
+            input.addEventListener('change', () => {
+                ensureDateForTimeInput(input);
+                saveTimelineForm();
+            });
+        }
+    });
+
+    const eventInputs = statusForm ? statusForm.querySelectorAll('input[data-event-id]') : [];
+    eventInputs.forEach((input) => {
+        input.addEventListener('change', () => {
+            ensureDateForTimeInput(input);
+            if (!validateTimelineOrder()) return;
+            const eventId = input.getAttribute('data-event-id');
+            if (!eventId) return;
+            const row = input.closest('tr');
+            if (!row) return;
+            const dateInput = row.querySelector('input[type="date"][data-event-id]');
+            const timeInput = row.querySelector('input[type="time"][data-event-id]');
+            if (!dateInput || !dateInput.value) return;
+            updateTimelineIndicator('Saving...');
+            const formData = new URLSearchParams();
+            formData.append('status_date', dateInput.value);
+            if (timeInput && timeInput.value) {
+                formData.append('status_time', timeInput.value);
+            }
+            fetch(`/patients/<%= selected_patient ? selected_patient.id : '' %>/status_events/${eventId}/update`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: formData.toString()
+            }).finally(() => updateTimelineIndicator());
+        });
+    });
+
+    const refreshBtn = document.getElementById('timeline-refresh-btn');
+    if (refreshBtn) {
+        refreshBtn.addEventListener('click', () => {
+            if (!selectedPatientId) return;
+            window.location = `/?view=${currentView}&selected_patient=${selectedPatientId}`;
+        });
+    }
 </script>
 </body>
 </html>

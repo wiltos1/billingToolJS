@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <title>Shift Grid</title>
+    <link rel="icon" href="/static/favicon.png">
     <style>
         body { font-family: Arial, sans-serif; max-width: 1100px; margin:0 auto; padding:20px; background:#f3f7fb; }
         .card { background:#fff; padding:15px 20px; margin:15px 0; border-radius:8px; box-shadow:0 2px 4px rgba(0,0,0,0.08); }
@@ -19,6 +20,9 @@
         .triage-extras, .delivery-extras { margin-top: 4px; text-align: left; font-size: 0.85em; }
         .triage-extras label, .delivery-extras label { display: flex; align-items: center; gap: 6px; margin: 2px 0; }
         .save-indicator { font-size: 0.85em; font-weight: bold; color: #2e7d32; }
+        .warning-banner { display:none; margin:10px 0; padding:8px 10px; border-radius:6px; background:#fff3cd; color:#7c5d00; border:1px solid #f0d58c; }
+        .cell-warning { outline: 2px solid #f0ad4e; }
+        .disabled-link { opacity: 0.5; pointer-events: none; cursor: not-allowed; }
     </style>
 </head>
 <body>
@@ -33,6 +37,7 @@
         </div>
     </div>
     <div class="save-indicator" id="save-indicator">Saved: --</div>
+    <div class="warning-banner" id="grid-warning"></div>
     <% if (is_read_only) { %>
     <div class="card">
         <p class="muted">Viewing a previous shift grid. This view is read-only.</p>
@@ -205,7 +210,9 @@
                 if (!eventTime) return;
                 if (!baseOrder[event.status]) return;
                 const afterStatus = (event.after_status || '').trim() || 'Triage';
-                const afterOrder = baseOrder[afterStatus] || baseOrder.Triage;
+                const afterOrder = afterStatus.startsWith('event:')
+                    ? baseOrder[event.status]
+                    : (baseOrder[afterStatus] || baseOrder.Triage);
                 events.push({ time: eventTime, status: event.status, order: afterOrder + 0.5 });
             });
 
@@ -369,9 +376,69 @@
             if (!indicator) return;
             indicator.textContent = 'Saving...';
         }
+        function setExitDisabled(disabled) {
+            document.querySelectorAll('a[data-save-grid]').forEach((link) => {
+                if (disabled) {
+                    link.classList.add('disabled-link');
+                    link.setAttribute('aria-disabled', 'true');
+                } else {
+                    link.classList.remove('disabled-link');
+                    link.removeAttribute('aria-disabled');
+                }
+            });
+        }
+
+        function validateGrid() {
+            const warningBanner = document.getElementById('grid-warning');
+            const warnings = [];
+            document.querySelectorAll('td.cell-warning').forEach((cell) => {
+                cell.classList.remove('cell-warning');
+            });
+
+            document.querySelectorAll('td').forEach((cell) => {
+                const patientSelect = cell.querySelector('.patient-select');
+                const actionSelect = cell.querySelector('.action-select');
+                if (!patientSelect || !actionSelect) return;
+                if (!patientSelect.value) return;
+                const action = actionSelect.value || '';
+                if (!action) {
+                    warnings.push('Select an action for each patient slot.');
+                    cell.classList.add('cell-warning');
+                    return;
+                }
+                if (action === 'delivery') {
+                    const deliveryTimeInput = cell.querySelector('.delivery-time');
+                    const slotTimeRaw = cell.getAttribute('data-slot-time');
+                    if (deliveryTimeInput && deliveryTimeInput.value && slotTimeRaw) {
+                        const slotStart = new Date(slotTimeRaw);
+                        const slotEnd = new Date(slotStart.getTime() + 15 * 60 * 1000);
+                        const deliveryTime = new Date(deliveryTimeInput.value);
+                        if (deliveryTime < slotStart || deliveryTime >= slotEnd) {
+                            warnings.push('Delivery time must fall within the selected 15-minute slot.');
+                            cell.classList.add('cell-warning');
+                        }
+                    }
+                }
+            });
+
+            if (warningBanner) {
+                if (warnings.length) {
+                    warningBanner.textContent = warnings[0];
+                    warningBanner.style.display = 'block';
+                } else {
+                    warningBanner.textContent = '';
+                    warningBanner.style.display = 'none';
+                }
+            }
+            const isValid = warnings.length === 0;
+            setExitDisabled(!isValid);
+            return isValid;
+        }
+
         function saveGrid(callback) {
             const form = document.getElementById('grid-form');
             if (!form) { if (callback) callback(); return false; }
+            if (!validateGrid()) { return false; }
             const data = new FormData(form);
             setSavingIndicator();
             fetch(form.action, { method: 'POST', body: data, headers: {'X-Requested-With': 'fetch'}, keepalive: true })
@@ -410,6 +477,7 @@
                 applyCellState(cell);
             }
         });
+        validateGrid();
         updateSaveIndicator();
         document.addEventListener('visibilitychange', () => {
             if (document.visibilityState === 'hidden') {

@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <title>Billing Optimization Suite</title>
+    <link rel="icon" href="/static/favicon.png">
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -66,7 +67,7 @@
             </select>
         </form>
         <% if (selected_patient) { %>
-        <button type="submit" form="confirm-form" style="margin-top:10px;">Confirm and Archive</button>
+        <button type="submit" form="confirm-form" style="margin-top:10px;" id="confirm-archive-btn">Confirm and Archive</button>
         <% } %>
         <% } else { %>
         <p class="muted">No active patients available.</p>
@@ -148,10 +149,23 @@
     <div class="card">
         <h3>Billing Notes</h3>
         <form id="confirm-form" method="post" action="/optimization/<%= selected_patient.id %>/confirm">
+            <input type="hidden" id="discharge-present" value="<%= selected_patient.discharge_datetime ? '1' : '0' %>">
             <label>Patient-specific notes</label>
             <textarea name="billing_note" rows="4" style="width:100%; padding:8px; border-radius:4px; border:1px solid #ccc;"><%= selected_patient.billing_note || '' %></textarea>
         </form>
     </div>
     <% } %>
 </body>
+<script>
+    const confirmBtn = document.getElementById('confirm-archive-btn');
+    const dischargePresent = document.getElementById('discharge-present');
+    if (confirmBtn && dischargePresent) {
+        confirmBtn.addEventListener('click', (event) => {
+            if (dischargePresent.value !== '1') {
+                event.preventDefault();
+                alert('Please enter a discharge time before archiving this patient.');
+            }
+        });
+    }
+</script>
 </html>

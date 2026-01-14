@@ -16,6 +16,36 @@ const INDUCTION_DAILY_LIMIT = 2;
 const INDUCTION_TOTAL_LIMIT = 4;
 const INDUCTION_WINDOW_MS = 24 * 60 * 60 * 1000;
 const DELIVERY_BUFFER_MINUTES = 30;
+const JA_VALUE = 55;
+
+const callbackCodeForTriage = (date) => {
+  const weekday = date.getDay();
+  const hour = date.getHours() + date.getMinutes() / 60;
+  const isWeekend = weekday === 0 || weekday === 6;
+
+  if (hour < 7) return '03.03MD';
+  if (hour >= 22) return '03.03MC';
+  if (isWeekend) return '03.03LA';
+  if (hour < 17) return '03.03KA';
+  return '03.03LA';
+};
+
+const callbackCodeForInpatient = (date) => {
+  const hour = date.getHours() + date.getMinutes() / 60;
+  if (hour < 7) return '03.05QB';
+  if (hour >= 22) return '03.05QA';
+  return '03.05P';
+};
+
+const callbackValue = (code) => ({
+  '03.03KA': 80,
+  '03.03LA': 120,
+  '03.03MC': 160,
+  '03.03MD': 160,
+  '03.05P': 159,
+  '03.05QA': 197,
+  '03.05QB': 197,
+}[code] || 0);
 
 const isSameDate = (a, b) => {
   return a && b
@@ -93,15 +123,29 @@ router.get('/optimization', requireLogin, (req, res) => {
          ORDER BY start_time`,
         [selectedPatient.id, formatLocalDateTime(startPoint), formatLocalDateTime(triageWindowEnd)]
       );
+      const activeShiftWindow = getActiveShiftWindow();
       recommendations = buildOptimizedBillings(
         selectedPatient,
         patientSlots,
-        getActiveShiftWindow()
+        activeShiftWindow
       );
       if (recommendations.length) {
+        const recommendationCodes = recommendations.map((rec) => rec.code);
+        const hasCode = (code) => recommendationCodes.includes(code);
+        const uniqueModifiers = (code) => {
+          const modifiers = recommendations
+            .filter((rec) => rec.code === code && rec.modifier)
+            .map((rec) => rec.modifier);
+          return Array.from(new Set(modifiers));
+        };
+
         const has1399JA = recommendations.some((rec) => rec.code === '13.99JA');
         const hasContinuousMonitoring = recommendations.some((rec) => rec.code === '87.54B');
         const has0303AR = recommendations.some((rec) => rec.code === '03.03AR');
+        const triageSlots = patientSlots.filter((slot) => {
+          const actionKey = (slot.action || '').toLowerCase();
+          return actionKey === 'triage_visit' || actionKey === 'triage_reassessment';
+        });
         const cmEvents = dbAll(
           'SELECT id FROM patient_status_events WHERE patient_id = ? AND status = ?',
           [selectedPatient.id, 'Continuous Monitoring']
@@ -187,8 +231,53 @@ router.get('/optimization', requireLogin, (req, res) => {
           }
         }
 
-        if (has1399JA && delivered) {
-          optimizationNotes.push(`13.99JA is not billed within ${DELIVERY_BUFFER_MINUTES} minutes before delivery.`);
+        if (has1399JA) {
+          optimizationNotes.push(`13.99JA billed for up to 12 weighted slots within the active shift window; unmodified entries start at the first attended time, and none are billed within ${DELIVERY_BUFFER_MINUTES} minutes before delivery.`);
+        } else if (has0303AR) {
+          optimizationNotes.push('OB/VBAC deliveries use 03.03AR for attended slots instead of 13.99JA.');
+        } else if (!activeShiftWindow) {
+          optimizationNotes.push('No active shift window; 13.99JA and callback billing are not generated.');
+        }
+
+        if (activeShiftWindow) {
+          const firstSlot = dbGet(
+            `SELECT * FROM shift_slots
+             WHERE doctor_id = ? AND start_time >= ? AND start_time < ?
+               AND patient_id IS NOT NULL AND action IS NOT NULL AND action != ''
+             ORDER BY start_time
+             LIMIT 1`,
+            [activeShiftWindow.doctor_id, activeShiftWindow.start_datetime, activeShiftWindow.end_datetime]
+          );
+          if (firstSlot && firstSlot.patient_id === selectedPatient.id) {
+            const slotTime = toDate(firstSlot.start_time);
+            const actionKey = (firstSlot.action || '').toLowerCase();
+            const callbackCodes = [];
+            let callbackTotal = 0;
+            if (slotTime && (actionKey === 'triage_visit' || actionKey === 'triage_reassessment')) {
+              const code = callbackCodeForTriage(slotTime);
+              callbackCodes.push(code);
+              callbackTotal = callbackValue(code);
+            } else if (slotTime && admitted && slotTime >= admitted) {
+              const code = callbackCodeForInpatient(slotTime);
+              callbackCodes.push('03.03DF', code);
+              callbackTotal = callbackValue(code);
+            }
+
+            if (callbackCodes.length) {
+              const billedCallback = recommendations.some((rec) => callbackCodes.includes(rec.code));
+              if (billedCallback) {
+                optimizationNotes.push(`Callback billed: ${callbackCodes.join(' + ')}.`);
+              } else {
+                const ghostBeforeCallback = recommendations.filter(
+                  (rec) => rec.code === '13.99JA' && !rec.modifier && slotTime && rec.time < slotTime
+                );
+                const ghostTotal = ghostBeforeCallback.length * JA_VALUE;
+                if (ghostTotal > callbackTotal) {
+                  optimizationNotes.push(`Callback skipped because ghost 13.99JA total ($${ghostTotal}) exceeds callback ($${callbackTotal}).`);
+                }
+              }
+            }
+          }
         }
 
         const inductionEvents = dbAll(
@@ -231,6 +320,98 @@ router.get('/optimization', requireLogin, (req, res) => {
           }
           if (billedNst > 0) {
             optimizationNotes.push(`${billedNst} induction NST(s) billed with induction.`);
+          }
+        }
+
+        if (triageWindowEnd && delivered && triageWindowEnd > delivered) {
+          optimizationNotes.push('Triage billing window extended to the latest triage event after delivery.');
+        }
+
+        if (hasCode('03.03BZ')) {
+          const modifiers = uniqueModifiers('03.03BZ');
+          if (modifiers.length) {
+            optimizationNotes.push(`Triage visit billed (03.03BZ) with modifier ${modifiers.join(', ')} based on total triage visit time.`);
+          } else {
+            optimizationNotes.push('Triage visit billed (03.03BZ) with no time-based modifier applied.');
+          }
+        }
+
+        const reassessmentCodes = ['03.05F', '03.05FA', '03.05FB'];
+        const billedReassessments = reassessmentCodes.filter((code) => hasCode(code));
+        if (billedReassessments.length) {
+          const modifiers = billedReassessments.flatMap((code) => uniqueModifiers(code));
+          if (modifiers.length) {
+            optimizationNotes.push(`Triage reassessment billed (${billedReassessments.join(', ')}) with modifier ${Array.from(new Set(modifiers)).join(', ')}.`);
+          } else {
+            optimizationNotes.push(`Triage reassessment billed (${billedReassessments.join(', ')}).`);
+          }
+        }
+
+        if (triageSlots.some((slot) => slot.triage_non_stress_test) && hasCode('87.54A')) {
+          const count = triageSlots.filter((slot) => slot.triage_non_stress_test).length;
+          optimizationNotes.push(`${count} triage non-stress test(s) billed (87.54A).`);
+        }
+        if (triageSlots.some((slot) => slot.triage_speculum_exam) && hasCode('13.99BE')) {
+          const count = triageSlots.filter((slot) => slot.triage_speculum_exam).length;
+          optimizationNotes.push(`${count} triage speculum exam(s) billed (13.99BE).`);
+        }
+
+        if (hasCode('03.01AA')) {
+          const modifiers = uniqueModifiers('03.01AA');
+          if (modifiers.length) {
+            optimizationNotes.push(`After-hours premium billed (03.01AA) with modifiers ${modifiers.join(', ')}.`);
+          } else {
+            optimizationNotes.push('After-hours premium billed (03.01AA).');
+          }
+        }
+
+        if (hasCode('85.5A')) {
+          const modifiers = uniqueModifiers('85.5A');
+          if (modifiers.length) {
+            optimizationNotes.push(`Induction billed (85.5A) with after-hours modifier(s) ${modifiers.join(', ')}.`);
+          } else {
+            optimizationNotes.push('Induction billed (85.5A) with no after-hours modifier.');
+          }
+        }
+
+        if (hasCode('87.54B')) {
+          const modifiers = uniqueModifiers('87.54B');
+          if (modifiers.length) {
+            optimizationNotes.push(`Continuous Monitoring billed (87.54B) with after-hours modifier(s) ${modifiers.join(', ')}.`);
+          } else {
+            optimizationNotes.push('Continuous Monitoring billed (87.54B).');
+          }
+        }
+
+        const deliveryCodes = ['87.98A', '87.98B', '87.98C'];
+        const billedDeliveryCode = deliveryCodes.find((code) => hasCode(code));
+        if (billedDeliveryCode) {
+          const modifiers = uniqueModifiers(billedDeliveryCode);
+          if (modifiers.length) {
+            optimizationNotes.push(`Delivery billed (${billedDeliveryCode}) with after-hours modifier ${modifiers.join(', ')}.`);
+          } else {
+            optimizationNotes.push(`Delivery billed (${billedDeliveryCode}).`);
+          }
+        }
+
+        const deliveryExtras = [
+          { code: '87.99A', label: 'Postpartum hemorrhage' },
+          { code: '84.21', label: 'Vacuum delivery' },
+          { code: '87.89B', label: 'Extensive vaginal laceration' },
+          { code: '85.69B', label: 'Shoulder dystocia' },
+          { code: '87.6', label: 'Manual removal of placenta' },
+        ];
+        const billedExtras = deliveryExtras
+          .filter((extra) => hasCode(extra.code))
+          .map((extra) => `${extra.label} (${extra.code})`);
+        if (billedExtras.length) {
+          optimizationNotes.push(`Delivery extras billed: ${billedExtras.join(', ')}.`);
+        }
+
+        if (has0303AR) {
+          const modifiers = uniqueModifiers('03.03AR');
+          if (modifiers.includes('COINPT')) {
+            optimizationNotes.push('COINPT modifier applied to 03.03AR for two attended slots 14-16 minutes apart within the active shift window.');
           }
         }
       }
