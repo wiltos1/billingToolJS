@@ -365,83 +365,92 @@ const callbackCodeForInpatient = (date) => {
   return '03.05P';
 };
 
-const buildCallbackBillingInfo = (patient, activeShiftWindow) => {
-  if (!patient || !activeShiftWindow) {
-    return { billings: [], slotTime: null, total: 0 };
-  }
-  const firstSlot = dbGet(
-    `SELECT * FROM shift_slots
-     WHERE doctor_id = ? AND start_time >= ? AND start_time < ?
-       AND patient_id IS NOT NULL AND action IS NOT NULL AND action != ''
-     ORDER BY start_time
-     LIMIT 1`,
-    [activeShiftWindow.doctor_id, activeShiftWindow.start_datetime, activeShiftWindow.end_datetime]
-  );
-  if (!firstSlot || firstSlot.patient_id !== patient.id) {
-    return { billings: [], slotTime: null, total: 0 };
-  }
+const buildCallbackBillingInfo = (patient, activeShiftWindows) => {
+  if (!patient) return [];
+  const windows = Array.isArray(activeShiftWindows)
+    ? activeShiftWindows
+    : (activeShiftWindows ? [activeShiftWindows] : []);
+  if (!windows.length) return [];
 
-  const slotTime = toDate(firstSlot.start_time);
-  if (!slotTime) return { billings: [], slotTime: null, total: 0 };
-  const doctor = firstSlot.doctor_id
-    ? dbGet('SELECT * FROM doctors WHERE id = ?', [firstSlot.doctor_id])
-    : null;
+  return windows.map((window) => {
+    const firstSlot = dbGet(
+      `SELECT * FROM shift_slots
+       WHERE doctor_id = ? AND start_time >= ? AND start_time < ?
+         AND patient_id IS NOT NULL AND action IS NOT NULL AND action != ''
+       ORDER BY start_time
+       LIMIT 1`,
+      [window.doctor_id, window.start_datetime, window.end_datetime]
+    );
+    if (!firstSlot || firstSlot.patient_id !== patient.id) {
+      return { billings: [], slotTime: null, total: 0 };
+    }
 
-  const actionKey = (firstSlot.action || '').toLowerCase();
-  if (actionKey === 'triage_visit' || actionKey === 'triage_reassessment') {
-    const code = callbackCodeForTriage(slotTime);
-    return {
-      billings: [{
-      time: slotTime,
-      code,
-      modifier: '',
-      doctor,
-    }],
-      slotTime,
-      total: {
-        '03.03KA': 80,
-        '03.03LA': 120,
-        '03.03MC': 160,
-        '03.03MD': 160,
-      }[code] || 0,
-    };
-  }
+    const slotTime = toDate(firstSlot.start_time);
+    if (!slotTime) return { billings: [], slotTime: null, total: 0 };
+    const doctor = firstSlot.doctor_id
+      ? dbGet('SELECT * FROM doctors WHERE id = ?', [firstSlot.doctor_id])
+      : null;
 
-  const admittedAt = patient.care_admitted_at ? toDate(patient.care_admitted_at) : null;
-  if (admittedAt && slotTime >= admittedAt) {
-    const inpatientCode = callbackCodeForInpatient(slotTime);
-    const total = {
-      '03.05P': 159,
-      '03.05QA': 197,
-      '03.05QB': 197,
-    }[inpatientCode] || 0;
-    return {
-      billings: [
-        {
+    const actionKey = (firstSlot.action || '').toLowerCase();
+    if (actionKey === 'triage_visit' || actionKey === 'triage_reassessment') {
+      const code = callbackCodeForTriage(slotTime);
+      return {
+        billings: [{
           time: slotTime,
-          code: '03.03DF',
-        modifier: '',
-        doctor,
-      },
-      {
-        time: slotTime,
-        code: inpatientCode,
-        modifier: '',
-        doctor,
-      },
-    ],
-      slotTime,
-      total,
-    };
-  }
+          code,
+          modifier: '',
+          doctor,
+        }],
+        slotTime,
+        total: {
+          '03.03KA': 80,
+          '03.03LA': 120,
+          '03.03MC': 160,
+          '03.03MD': 160,
+        }[code] || 0,
+      };
+    }
 
-  return { billings: [], slotTime, total: 0 };
+    const admittedAt = patient.care_admitted_at ? toDate(patient.care_admitted_at) : null;
+    if (admittedAt && slotTime >= admittedAt) {
+      const inpatientCode = callbackCodeForInpatient(slotTime);
+      const total = {
+        '03.05P': 159,
+        '03.05QA': 197,
+        '03.05QB': 197,
+      }[inpatientCode] || 0;
+      return {
+        billings: [
+          {
+            time: slotTime,
+            code: '03.03DF',
+            modifier: '',
+            doctor,
+          },
+          {
+            time: slotTime,
+            code: inpatientCode,
+            modifier: '',
+            doctor,
+          },
+        ],
+        slotTime,
+        total,
+      };
+    }
+
+    return { billings: [], slotTime, total: 0 };
+  }).filter((info) => info.billings.length);
 };
 
 const buildOptimizedBillings = (patient, patientSlots, activeShiftWindow) => {
   const admitted = toDate(patient.care_admitted_at);
   const delivered = toDate(patient.care_delivered_at);
   if (!admitted || !delivered || admitted >= delivered) return [];
+  const activeShiftWindows = Array.isArray(activeShiftWindow)
+    ? activeShiftWindow
+    : (activeShiftWindow ? [activeShiftWindow] : []);
+  const primaryShiftWindow = activeShiftWindows.length ? activeShiftWindows[0] : null;
 
   const triageEvents = dbAll(
     'SELECT occurred_at FROM patient_status_events WHERE patient_id = ? AND status = ?',
@@ -507,7 +516,7 @@ const buildOptimizedBillings = (patient, patientSlots, activeShiftWindow) => {
   const deliveredByOb = deliverySlot && deliveryCode === '87.98B';
   const deliveredByVbac = deliverySlot && deliveryCode === '87.98C';
 
-  const callbackInfo = buildCallbackBillingInfo(patient, activeShiftWindow);
+  const callbackInfos = buildCallbackBillingInfo(patient, activeShiftWindows);
 
   if (deliveredByOb || deliveredByVbac) {
     const attended = sortedScoped.filter((slot) => {
@@ -527,9 +536,9 @@ const buildOptimizedBillings = (patient, patientSlots, activeShiftWindow) => {
       if (!firstTime || !secondTime) continue;
       const gap = secondTime - firstTime;
       if (gap >= 14 * 60 * 1000 && gap <= 16 * 60 * 1000) {
-        if (activeShiftWindow) {
-          const windowStart = toDate(activeShiftWindow.start_datetime);
-          const windowEnd = toDate(activeShiftWindow.end_datetime);
+        if (primaryShiftWindow) {
+          const windowStart = toDate(primaryShiftWindow.start_datetime);
+          const windowEnd = toDate(primaryShiftWindow.end_datetime);
           const inShift = windowStart && windowEnd && firstTime >= windowStart && firstTime < windowEnd && secondTime >= windowStart && secondTime < windowEnd;
           if (!inShift) continue;
         }
@@ -538,8 +547,8 @@ const buildOptimizedBillings = (patient, patientSlots, activeShiftWindow) => {
       }
     }
 
-    const shiftDoctor = activeShiftWindow
-      ? dbGet('SELECT * FROM doctors WHERE id = ?', [activeShiftWindow.doctor_id])
+    const shiftDoctor = primaryShiftWindow
+      ? dbGet('SELECT * FROM doctors WHERE id = ?', [primaryShiftWindow.doctor_id])
       : null;
 
     const billings = attended.map((slot) => {
@@ -570,11 +579,12 @@ const buildOptimizedBillings = (patient, patientSlots, activeShiftWindow) => {
     }
 
     const statusBillings = buildStatusEventBillings(patient.id, true);
-    const combined = billings.concat(triageBillings, statusBillings, callbackInfo.billings, afterHoursBillings);
+    const callbackBillings = callbackInfos.flatMap((info) => info.billings);
+    const combined = billings.concat(triageBillings, statusBillings, callbackBillings, afterHoursBillings);
     return combined.sort((a, b) => a.time - b.time);
   }
 
-  if (!activeShiftWindow) {
+  if (!primaryShiftWindow) {
     const statusBillings = buildStatusEventBillings(patient.id, true);
     return triageBillings.concat(statusBillings, afterHoursBillings).sort((a, b) => a.time - b.time);
   }
@@ -589,13 +599,13 @@ const buildOptimizedBillings = (patient, patientSlots, activeShiftWindow) => {
       .filter((key) => key)
   );
 
-  const shiftDoctor = dbGet('SELECT * FROM doctors WHERE id = ?', [activeShiftWindow.doctor_id]);
-  const windowStart = new Date(Math.max(admitted.getTime(), toDate(activeShiftWindow.start_datetime).getTime()));
-  const windowEnd = new Date(Math.min(delivered.getTime(), toDate(activeShiftWindow.end_datetime).getTime()));
+  const shiftDoctor = dbGet('SELECT * FROM doctors WHERE id = ?', [primaryShiftWindow.doctor_id]);
+  const windowStart = new Date(Math.max(admitted.getTime(), toDate(primaryShiftWindow.start_datetime).getTime()));
+  const windowEnd = new Date(Math.min(delivered.getTime(), toDate(primaryShiftWindow.end_datetime).getTime()));
   if (windowStart >= windowEnd) return [];
 
   let alignedStart = floorToQuarter(windowStart);
-  const shiftStart = toDate(activeShiftWindow.start_datetime);
+  const shiftStart = toDate(primaryShiftWindow.start_datetime);
   if (alignedStart < shiftStart) {
     alignedStart = new Date(shiftStart);
     alignedStart.setSeconds(0, 0);
@@ -659,20 +669,25 @@ const buildOptimizedBillings = (patient, patientSlots, activeShiftWindow) => {
     return billing.time >= firstAttendedTime;
   });
 
-  let callbackBillings = callbackInfo.billings;
-  if (callbackInfo.billings.length && callbackInfo.slotTime) {
-    const ghostBeforeCallback = filteredBillings.filter(
-      (billing) => billing.code === '13.99JA' && !billing.modifier && billing.time < callbackInfo.slotTime
-    );
-    const ghostTotal = ghostBeforeCallback.length * JA_VALUE;
-    if (ghostTotal > callbackInfo.total) {
-      callbackBillings = [];
-    } else {
-      // Keep callback, drop ghost JAs before callback slot.
-      filteredBillings = filteredBillings.filter(
-        (billing) => !(billing.code === '13.99JA' && !billing.modifier && billing.time < callbackInfo.slotTime)
+  let callbackBillings = [];
+  if (callbackInfos.length) {
+    const sortedCallbacks = callbackInfos
+      .filter((info) => info.slotTime && info.billings.length)
+      .slice()
+      .sort((a, b) => a.slotTime - b.slotTime);
+    sortedCallbacks.forEach((info) => {
+      const ghostBeforeCallback = filteredBillings.filter(
+        (billing) => billing.code === '13.99JA' && !billing.modifier && billing.time < info.slotTime
       );
-    }
+      const ghostTotal = ghostBeforeCallback.length * JA_VALUE;
+      if (ghostTotal > info.total) {
+        return;
+      }
+      callbackBillings = callbackBillings.concat(info.billings);
+      filteredBillings = filteredBillings.filter(
+        (billing) => !(billing.code === '13.99JA' && !billing.modifier && billing.time < info.slotTime)
+      );
+    });
   }
 
   const has1399JA = filteredBillings.some((billing) => billing.code === '13.99JA');

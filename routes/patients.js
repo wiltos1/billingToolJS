@@ -9,7 +9,7 @@ const {
   formatLocalDateTime,
   toDate,
   getShiftDoctor,
-  getActiveShiftWindow,
+  getActiveShiftWindows,
   requireLogin,
   optimizeBillings,
   formatCurrency,
@@ -537,7 +537,7 @@ router.get('/patients/:pid/optimized_pdf', requireLogin, (req, res) => {
   const recommendations = buildOptimizedBillings(
     patient,
     patientSlots,
-    getActiveShiftWindow()
+    getActiveShiftWindows()
   );
 
   if (!recommendations || recommendations.length === 0) {
@@ -648,7 +648,7 @@ router.get('/patients/:pid/confirmed_pdf', requireLogin, (req, res) => {
     const recommendations = buildOptimizedBillings(
       patient,
       patientSlots,
-      getActiveShiftWindow()
+      getActiveShiftWindows()
     );
     if (!recommendations.length) {
       return res.redirect('/?view=archived');

@@ -190,9 +190,15 @@ router.get('/shift_grid', requireLogin, (req, res) => {
 
 router.post('/shift_grid', requireLogin, (req, res) => {
   cleanupOldShiftData();
-  const shiftDoctor = getShiftDoctor();
-  const shiftWindow = getActiveShiftWindow();
-  if (!shiftDoctor || !shiftWindow) {
+  const windowId = parseInt(req.body.window_id, 10);
+  const shiftWindow = Number.isNaN(windowId)
+    ? getActiveShiftWindow()
+    : dbGet('SELECT * FROM shift_windows WHERE id = ?', [windowId]);
+  if (!shiftWindow) {
+    return res.redirect('/doctors/manage');
+  }
+  const shiftDoctor = dbGet('SELECT * FROM doctors WHERE id = ?', [shiftWindow.doctor_id]);
+  if (!shiftDoctor) {
     return res.redirect('/doctors/manage');
   }
 
@@ -274,7 +280,10 @@ router.post('/shift_grid', requireLogin, (req, res) => {
 
     if (actionVal === 'delivery') {
       const deliveryCodeInput = (req.body[`slot_delivery_code_${ts}`] || '').trim();
-      const deliveryCode = deliveryCodeInput || '87.98A';
+      if (!deliveryCodeInput) {
+        return;
+      }
+      const deliveryCode = deliveryCodeInput;
       const deliveryExact = (req.body[`slot_delivery_time_${ts}`] || '').trim();
       let exactDt = slotTime;
       if (deliveryExact) {

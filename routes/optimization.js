@@ -5,7 +5,7 @@ const {
   toDate,
   formatDisplay,
   formatLocalDateTime,
-  getActiveShiftWindow,
+  getActiveShiftWindows,
   optimizeBillings,
 } = require('../services/helpers');
 const { buildOptimizedBillings } = require('../services/rules');
@@ -123,11 +123,12 @@ router.get('/optimization', requireLogin, (req, res) => {
          ORDER BY start_time`,
         [selectedPatient.id, formatLocalDateTime(startPoint), formatLocalDateTime(triageWindowEnd)]
       );
-      const activeShiftWindow = getActiveShiftWindow();
+      const activeShiftWindows = getActiveShiftWindows();
+      const activeShiftWindow = activeShiftWindows.length ? activeShiftWindows[0] : null;
       recommendations = buildOptimizedBillings(
         selectedPatient,
         patientSlots,
-        activeShiftWindow
+        activeShiftWindows
       );
       if (recommendations.length) {
         const recommendationCodes = recommendations.map((rec) => rec.code);
@@ -239,16 +240,18 @@ router.get('/optimization', requireLogin, (req, res) => {
           optimizationNotes.push('No active shift window; 13.99JA and callback billing are not generated.');
         }
 
-        if (activeShiftWindow) {
-          const firstSlot = dbGet(
-            `SELECT * FROM shift_slots
-             WHERE doctor_id = ? AND start_time >= ? AND start_time < ?
-               AND patient_id IS NOT NULL AND action IS NOT NULL AND action != ''
-             ORDER BY start_time
-             LIMIT 1`,
-            [activeShiftWindow.doctor_id, activeShiftWindow.start_datetime, activeShiftWindow.end_datetime]
-          );
-          if (firstSlot && firstSlot.patient_id === selectedPatient.id) {
+        if (activeShiftWindows.length) {
+          const callbackDetails = [];
+          activeShiftWindows.forEach((window) => {
+            const firstSlot = dbGet(
+              `SELECT * FROM shift_slots
+               WHERE doctor_id = ? AND start_time >= ? AND start_time < ?
+                 AND patient_id IS NOT NULL AND action IS NOT NULL AND action != ''
+               ORDER BY start_time
+               LIMIT 1`,
+              [window.doctor_id, window.start_datetime, window.end_datetime]
+            );
+            if (!firstSlot || firstSlot.patient_id !== selectedPatient.id) return;
             const slotTime = toDate(firstSlot.start_time);
             const actionKey = (firstSlot.action || '').toLowerCase();
             const callbackCodes = [];
@@ -264,18 +267,42 @@ router.get('/optimization', requireLogin, (req, res) => {
             }
 
             if (callbackCodes.length) {
-              const billedCallback = recommendations.some((rec) => callbackCodes.includes(rec.code));
-              if (billedCallback) {
-                optimizationNotes.push(`Callback billed: ${callbackCodes.join(' + ')}.`);
-              } else {
-                const ghostBeforeCallback = recommendations.filter(
-                  (rec) => rec.code === '13.99JA' && !rec.modifier && slotTime && rec.time < slotTime
-                );
-                const ghostTotal = ghostBeforeCallback.length * JA_VALUE;
-                if (ghostTotal > callbackTotal) {
-                  optimizationNotes.push(`Callback skipped because ghost 13.99JA total ($${ghostTotal}) exceeds callback ($${callbackTotal}).`);
-                }
+              callbackDetails.push({
+                codes: callbackCodes,
+                total: callbackTotal,
+                slotTime,
+                doctorId: firstSlot.doctor_id || null,
+              });
+            }
+          });
+
+          if (callbackDetails.length) {
+            const billedCallbacks = callbackDetails.filter((detail) => {
+              if (!detail.doctorId) {
+                return recommendations.some((rec) => detail.codes.includes(rec.code));
               }
+              return recommendations.some(
+                (rec) => detail.codes.includes(rec.code) && rec.doctor && rec.doctor.id === detail.doctorId
+              );
+            });
+            if (billedCallbacks.length) {
+              if (billedCallbacks.length === 1) {
+                optimizationNotes.push(`Callback billed: ${billedCallbacks[0].codes.join(' + ')}.`);
+              } else {
+                optimizationNotes.push(`Callbacks billed for ${billedCallbacks.length} doctors (first patient per doctor).`);
+              }
+            }
+
+            const skippedCallbacks = callbackDetails.filter((detail) => {
+              if (!detail.slotTime) return false;
+              const ghostBeforeCallback = recommendations.filter(
+                (rec) => rec.code === '13.99JA' && !rec.modifier && rec.time < detail.slotTime
+              );
+              const ghostTotal = ghostBeforeCallback.length * JA_VALUE;
+              return ghostTotal > detail.total;
+            });
+            if (skippedCallbacks.length) {
+              optimizationNotes.push('One or more callbacks skipped because ghost 13.99JA total exceeded callback value.');
             }
           }
         }
@@ -459,7 +486,7 @@ router.post('/optimization/:pid/confirm', requireLogin, (req, res) => {
   const recommendations = buildOptimizedBillings(
     patient,
     patientSlots,
-    getActiveShiftWindow()
+    getActiveShiftWindows()
   );
   if (!recommendations.length) {
     return res.redirect('/optimization?selected_patient=' + pid + '&opt_error=' + encodeURIComponent('No eligible billing slots found within the Admitted-to-Delivered window.'));

@@ -76,6 +76,12 @@ const getActiveShiftWindow = () => {
   );
 };
 
+const getActiveShiftWindows = () => {
+  return dbAll(
+    'SELECT * FROM shift_windows WHERE is_active = 1 ORDER BY start_datetime DESC'
+  );
+};
+
 const splitWindowIntoDays = (startDate, endDate) => {
   const segments = [];
   let current = new Date(startDate);
@@ -154,6 +160,7 @@ module.exports = {
   toDate,
   getShiftDoctor,
   getActiveShiftWindow,
+  getActiveShiftWindows,
   splitWindowIntoDays,
   requireLogin,
   optimizeBillings,
