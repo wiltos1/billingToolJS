@@ -500,13 +500,27 @@ const buildBabyBillings = (babyPatient) => {
   );
   const billings = [];
 
+  let deliveryDoctor = null;
+  if (babyPatient.parent_patient_id) {
+    const deliverySlot = dbGet(
+      `SELECT * FROM shift_slots
+       WHERE patient_id = ? AND action = ?
+       ORDER BY start_time
+       LIMIT 1`,
+      [babyPatient.parent_patient_id, 'delivery']
+    );
+    if (deliverySlot && deliverySlot.doctor_id) {
+      deliveryDoctor = dbGet('SELECT * FROM doctors WHERE id = ?', [deliverySlot.doctor_id]);
+    }
+  }
+
   const admittedAt = toDate(babyPatient.care_admitted_at || babyPatient.start_datetime);
   if (admittedAt) {
     billings.push({
       time: admittedAt,
       code: '03.05G',
       modifier: '',
-      doctor: null,
+      doctor: deliveryDoctor,
     });
   }
 

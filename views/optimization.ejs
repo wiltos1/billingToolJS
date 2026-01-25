@@ -54,9 +54,26 @@
     </div>
 
     <div class="card">
-        <h2>Active Patient Optimization</h2>
+        <h2>Optimization View</h2>
+        <form method="get" action="/optimization" style="margin-top:8px;">
+            <label>View Mode</label>
+            <select name="view_mode" onchange="this.form.submit()">
+                <option value="patient" <%= view_mode === 'patient' ? 'selected' : '' %>>Patient</option>
+                <option value="doctor" <%= view_mode === 'doctor' ? 'selected' : '' %>>Doctor</option>
+            </select>
+            <% if (view_mode === 'patient' && selected_patient) { %>
+            <input type="hidden" name="selected_patient" value="<%= selected_patient.id %>">
+            <% } %>
+            <% if (view_mode === 'doctor' && selected_doctor) { %>
+            <input type="hidden" name="selected_doctor" value="<%= selected_doctor.id %>">
+            <% } %>
+        </form>
+
+        <% if (view_mode === 'patient') { %>
+        <h3 style="margin-top:12px;">Active Patient Optimization</h3>
         <% if (active_patients.length) { %>
         <form method="get" action="/optimization">
+            <input type="hidden" name="view_mode" value="patient">
             <label>Select Patient</label>
             <select name="selected_patient" onchange="this.form.submit()">
                 <% active_patients.forEach((p) => { %>
@@ -72,9 +89,29 @@
         <% } else { %>
         <p class="muted">No active patients available.</p>
         <% } %>
+        <% } %>
+
+        <% if (view_mode === 'doctor') { %>
+        <h3 style="margin-top:12px;">Recent Doctors (Last 4 Days)</h3>
+        <% if (recent_doctors && recent_doctors.length) { %>
+        <form method="get" action="/optimization">
+            <input type="hidden" name="view_mode" value="doctor">
+            <label>Select Doctor</label>
+            <select name="selected_doctor" onchange="this.form.submit()">
+                <% recent_doctors.forEach((doc) => { %>
+                <option value="<%= doc.id %>" <%= selected_doctor && selected_doctor.id === doc.id ? 'selected' : '' %>>
+                    Dr. <%= doc.name %>
+                </option>
+                <% }) %>
+            </select>
+        </form>
+        <% } else { %>
+        <p class="muted">No recent doctors found in the last 4 days.</p>
+        <% } %>
+        <% } %>
     </div>
 
-    <% if (selected_patient) { %>
+    <% if (view_mode === 'patient' && selected_patient) { %>
     <div class="card">
         <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
             <div>
@@ -142,32 +179,102 @@
             <% }) %>
         </table>
         <% } %>
-    </div>
-    <% } %>
 
     <% if (selected_patient && baby_patient) { %>
     <div class="card">
-        <h3 style="margin:0;">Baby Billing Codes</h3>
-        <p class="muted" style="margin:6px 0 0;">Patient #<%= baby_patient.id %> &mdash; <%= baby_patient.initials %> / <%= baby_patient.identifier %></p>
-        <% if (baby_recommendations && baby_recommendations.length) { %>
-        <table>
-            <tr><th>Time</th><th>Code</th><th>Modifier</th><th>Doctor</th></tr>
-            <% baby_recommendations.forEach((rec) => { %>
-            <tr>
-                <td><%= format_display(rec.time) %></td>
-                <td><%= rec.code %></td>
-                <td><%= rec.modifier || '-' %></td>
-                <td><%= rec.doctor ? ('Dr. ' + rec.doctor.name) : '-' %></td>
-            </tr>
-            <% }) %>
-        </table>
+            <h3 style="margin:0;">Baby Billing Codes</h3>
+            <p class="muted" style="margin:6px 0 0;">Patient #<%= baby_patient.id %> &mdash; <%= baby_patient.initials %> / <%= baby_patient.identifier %></p>
+            <% if (baby_recommendations && baby_recommendations.length) { %>
+            <table>
+                <tr><th>Time</th><th>Code</th><th>Modifier</th><th>Doctor</th></tr>
+                <% baby_recommendations.forEach((rec) => { %>
+                <tr>
+                    <td><%= format_display(rec.time) %></td>
+                    <td><%= rec.code %></td>
+                    <td><%= rec.modifier || '-' %></td>
+                    <td><%= rec.doctor ? ('Dr. ' + rec.doctor.name) : '-' %></td>
+                </tr>
+                <% }) %>
+            </table>
         <% } else { %>
         <p class="muted">No baby billing codes generated yet.</p>
         <% } %>
     </div>
     <% } %>
 
-    <% if (selected_patient) { %>
+
+    </div>
+    <% } %>
+
+    <% if (view_mode === 'doctor') { %>
+    <div class="card">
+        <strong>Billing Entry Summary</strong>
+        <% if (summary_tables && summary_tables.length) { %>
+        <% summary_tables.forEach((table) => { %>
+        <table style="margin-top:12px;">
+            <tr>
+                <th colspan="15" style="text-align:left;">
+                    Dr. <%= table.doctor ? table.doctor.name : 'Unknown' %>
+                    &mdash; <%= table.shift_date || '-' %>
+                    &mdash; <%= table.shift_day || '-' %>
+                    &mdash; <%= table.shift_type || '-' %> Shift
+                </th>
+            </tr>
+            <tr>
+                <th>Pt Identifier</th>
+                <th>Date of Service</th>
+                <th>Diagnostic Code</th>
+                <th>Billing Code</th>
+                <th># Calls</th>
+                <th>Encounter #</th>
+                <th>Modifier</th>
+                <th>CMGP #</th>
+                <th>BMI</th>
+                <th colspan="6">03.01AA</th>
+            </tr>
+            <tr>
+                <th colspan="9"></th>
+                <th>TEV</th>
+                <th>TWK</th>
+                <th>TNTP</th>
+                <th>TNTA</th>
+                <th>TST</th>
+                <th>TDES</th>
+            </tr>
+            <% if (table.rows && table.rows.length) { %>
+            <% table.rows.forEach((row) => { %>
+            <tr>
+                <td><%= row.patient_identifier %></td>
+                <td><%= row.date_of_service %></td>
+                <td><%= row.diagnostic_code %></td>
+                <td><%= row.billing_code %></td>
+                <td><%= row.number_of_calls %></td>
+                <td><%= row.encounter_number %></td>
+                <td><%= row.modifier || '' %></td>
+                <td><%= row.cmgp_modifier || '' %></td>
+                <td><%= row.bmi_modifier || '' %></td>
+                <td><%= row.aa_counts && row.aa_counts.TEV ? row.aa_counts.TEV : '' %></td>
+                <td><%= row.aa_counts && row.aa_counts.TWK ? row.aa_counts.TWK : '' %></td>
+                <td><%= row.aa_counts && row.aa_counts.TNTP ? row.aa_counts.TNTP : '' %></td>
+                <td><%= row.aa_counts && row.aa_counts.TNTA ? row.aa_counts.TNTA : '' %></td>
+                <td><%= row.aa_counts && row.aa_counts.TST ? row.aa_counts.TST : '' %></td>
+                <td><%= row.aa_counts && row.aa_counts.TDES ? row.aa_counts.TDES : '' %></td>
+            </tr>
+            <% }) %>
+            <% } else { %>
+            <tr>
+                <td colspan="15" class="muted">No summary entries for this doctor yet.</td>
+            </tr>
+            <% } %>
+        </table>
+        <% }) %>
+        <% } else { %>
+        <p class="muted">No summary entries for this doctor yet.</p>
+        <% } %>
+    </div>
+    <% } %>
+
+    <% if (view_mode === 'patient' && selected_patient) { %>
     <div class="card">
         <h3>Billing Notes</h3>
         <form id="confirm-form" method="post" action="/optimization/<%= selected_patient.id %>/confirm">
