@@ -131,7 +131,7 @@
     <h3>Archived Patients</h3>
     <% if (archived_patients.length) { %>
     <table>
-        <tr><th>Initials</th><th>ID Number</th><th>Download</th><th>Re-activate</th><th>Delete</th></tr>
+        <tr><th>Initials</th><th>ID Number</th><th>Download</th><th>Re-activate</th></tr>
         <% archived_patients.forEach((p) => { %>
         <tr>
             <td><%= p.initials %></td>
@@ -144,11 +144,6 @@
             <td>
                 <form action="/patients/<%= p.id %>/restore" method="post" style="margin:0;">
                     <button type="submit">Re-activate Patient</button>
-                </form>
-            </td>
-            <td>
-                <form action="/patients/<%= p.id %>/delete" method="post" style="margin:0;" onsubmit="return confirm('Permanently delete this patient? This cannot be undone.');">
-                    <button type="submit" style="background:#c62828;">Delete Patient</button>
                 </form>
             </td>
         </tr>
@@ -261,6 +256,44 @@
 </table>
 <% } else { %>
 <p class="muted">No timeline events for this patient yet.</p>
+<% } %>
+
+<% if (baby_patient) { %>
+<hr class="section-divider">
+<h3 class="section-header">Baby</h3>
+<p class="muted">Patient #<%= baby_patient.id %> &mdash; <%= baby_patient.initials %> / <%= baby_patient.identifier %></p>
+
+<h4 class="section-header">Baby Status Timeline</h4>
+<% if (baby_status_timeline_rows.length) { %>
+<table>
+    <tr><th>Status</th><th>Date</th><th>Time</th></tr>
+    <% baby_status_timeline_rows.forEach((row) => { %>
+    <tr>
+        <td><%= row.label %></td>
+        <td><span class="muted"><%= row.date_value || '-' %></span></td>
+        <td><span class="muted"><%= row.time_value || '-' %></span></td>
+    </tr>
+    <% }) %>
+</table>
+<% } else { %>
+<p class="muted">No baby status timeline yet.</p>
+<% } %>
+
+<h4 class="section-header">Baby Patient Timeline</h4>
+<% if (baby_timeline_entries.length) { %>
+<table>
+    <tr><th>Date/Time</th><th>Doctor</th><th>Action / Status</th></tr>
+    <% baby_timeline_entries.forEach((entry) => { %>
+    <tr>
+        <td><%= format_display(entry.time) %></td>
+        <td><% if (entry.doctor_name) { %>Dr. <%= entry.doctor_name %><% } else { %>-<% } %></td>
+        <td><strong><%= entry.action %></strong></td>
+    </tr>
+    <% }) %>
+</table>
+<% } else { %>
+<p class="muted">No baby timeline events yet.</p>
+<% } %>
 <% } %>
 
 <% if (selected_patient.status === 'active') { %>

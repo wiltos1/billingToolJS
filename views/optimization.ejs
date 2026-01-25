@@ -145,6 +145,28 @@
     </div>
     <% } %>
 
+    <% if (selected_patient && baby_patient) { %>
+    <div class="card">
+        <h3 style="margin:0;">Baby Billing Codes</h3>
+        <p class="muted" style="margin:6px 0 0;">Patient #<%= baby_patient.id %> &mdash; <%= baby_patient.initials %> / <%= baby_patient.identifier %></p>
+        <% if (baby_recommendations && baby_recommendations.length) { %>
+        <table>
+            <tr><th>Time</th><th>Code</th><th>Modifier</th><th>Doctor</th></tr>
+            <% baby_recommendations.forEach((rec) => { %>
+            <tr>
+                <td><%= format_display(rec.time) %></td>
+                <td><%= rec.code %></td>
+                <td><%= rec.modifier || '-' %></td>
+                <td><%= rec.doctor ? ('Dr. ' + rec.doctor.name) : '-' %></td>
+            </tr>
+            <% }) %>
+        </table>
+        <% } else { %>
+        <p class="muted">No baby billing codes generated yet.</p>
+        <% } %>
+    </div>
+    <% } %>
+
     <% if (selected_patient) { %>
     <div class="card">
         <h3>Billing Notes</h3>

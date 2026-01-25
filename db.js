@@ -96,7 +96,9 @@ const ensureSchema = () => {
       care_admitted_at TEXT,
       care_delivered_at TEXT,
       status TEXT DEFAULT 'active',
-      optimized_total REAL DEFAULT 0
+      optimized_total REAL DEFAULT 0,
+      patient_type TEXT DEFAULT 'mother',
+      parent_patient_id INTEGER
     );
 
     CREATE TABLE IF NOT EXISTS billings (
@@ -119,6 +121,10 @@ const ensureSchema = () => {
       start_time TEXT NOT NULL,
       action TEXT DEFAULT 'attended',
       delivery_by TEXT,
+      delivery_bmipro INTEGER DEFAULT 0,
+      rounds_care_type TEXT,
+      rounds_supportive_care INTEGER DEFAULT 0,
+      tongue_tie_supportive_care INTEGER DEFAULT 0,
       FOREIGN KEY (doctor_id) REFERENCES doctors(id) ON DELETE CASCADE,
       FOREIGN KEY (patient_id) REFERENCES patients(id) ON DELETE SET NULL
     );
@@ -143,6 +149,15 @@ const ensureSchema = () => {
       FOREIGN KEY (doctor_id) REFERENCES doctors(id) ON DELETE SET NULL
     );
 
+    CREATE TABLE IF NOT EXISTS ghost_ja_locks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      patient_id INTEGER NOT NULL,
+      doctor_id INTEGER NOT NULL,
+      start_time TEXT NOT NULL,
+      FOREIGN KEY (patient_id) REFERENCES patients(id) ON DELETE CASCADE,
+      FOREIGN KEY (doctor_id) REFERENCES doctors(id) ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS patient_status_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       patient_id INTEGER NOT NULL,
@@ -157,6 +172,7 @@ const ensureSchema = () => {
     CREATE INDEX IF NOT EXISTS idx_shift_slots_start_time ON shift_slots(start_time);
     CREATE INDEX IF NOT EXISTS idx_billings_patient_id ON billings(patient_id);
     CREATE INDEX IF NOT EXISTS idx_confirmed_billings_patient_id ON confirmed_billings(patient_id);
+    CREATE INDEX IF NOT EXISTS idx_ghost_ja_locks_doctor_time ON ghost_ja_locks(doctor_id, start_time);
     CREATE INDEX IF NOT EXISTS idx_patient_status_events_patient_id ON patient_status_events(patient_id);
   `);
 
@@ -173,6 +189,15 @@ const ensureSchema = () => {
   if (!hasSecondTriageAfter) {
     db.exec('ALTER TABLE patients ADD COLUMN second_triage_after TEXT');
   }
+  const hasPatientType = patientColumns.some((col) => col.name === 'patient_type');
+  if (!hasPatientType) {
+    db.exec('ALTER TABLE patients ADD COLUMN patient_type TEXT DEFAULT \'mother\'');
+  }
+  const hasParentPatientId = patientColumns.some((col) => col.name === 'parent_patient_id');
+  if (!hasParentPatientId) {
+    db.exec('ALTER TABLE patients ADD COLUMN parent_patient_id INTEGER');
+  }
+  db.exec("UPDATE patients SET patient_type = 'mother' WHERE patient_type IS NULL");
 
   const statusEventColumns = dbAll('PRAGMA table_info(patient_status_events)');
   if (statusEventColumns.length) {
@@ -203,6 +228,10 @@ const ensureSchema = () => {
   if (!hasDeliveryCode) {
     db.exec('ALTER TABLE shift_slots ADD COLUMN delivery_code TEXT');
   }
+  const hasDeliveryBmipro = shiftColumns.some((col) => col.name === 'delivery_bmipro');
+  if (!hasDeliveryBmipro) {
+    db.exec('ALTER TABLE shift_slots ADD COLUMN delivery_bmipro INTEGER DEFAULT 0');
+  }
   const hasDeliveryTime = shiftColumns.some((col) => col.name === 'delivery_time');
   if (!hasDeliveryTime) {
     db.exec('ALTER TABLE shift_slots ADD COLUMN delivery_time TEXT');
@@ -226,6 +255,18 @@ const ensureSchema = () => {
   const hasDeliveryPlacenta = shiftColumns.some((col) => col.name === 'delivery_manual_placenta');
   if (!hasDeliveryPlacenta) {
     db.exec('ALTER TABLE shift_slots ADD COLUMN delivery_manual_placenta INTEGER DEFAULT 0');
+  }
+  const hasRoundsCareType = shiftColumns.some((col) => col.name === 'rounds_care_type');
+  if (!hasRoundsCareType) {
+    db.exec('ALTER TABLE shift_slots ADD COLUMN rounds_care_type TEXT');
+  }
+  const hasRoundsSupportiveCare = shiftColumns.some((col) => col.name === 'rounds_supportive_care');
+  if (!hasRoundsSupportiveCare) {
+    db.exec('ALTER TABLE shift_slots ADD COLUMN rounds_supportive_care INTEGER DEFAULT 0');
+  }
+  const hasTongueTieSupportive = shiftColumns.some((col) => col.name === 'tongue_tie_supportive_care');
+  if (!hasTongueTieSupportive) {
+    db.exec('ALTER TABLE shift_slots ADD COLUMN tongue_tie_supportive_care INTEGER DEFAULT 0');
   }
 };
 

@@ -19,10 +19,40 @@
         .locked-cell { background: #f0f3f7; opacity: 0.7; }
         .triage-extras, .delivery-extras { margin-top: 4px; text-align: left; font-size: 0.85em; }
         .triage-extras label, .delivery-extras label { display: flex; align-items: center; gap: 6px; margin: 2px 0; }
+        .rounds-fields { margin-top: 4px; text-align: left; font-size: 0.85em; }
+        .rounds-fields label { display: block; margin: 4px 0 2px; }
+        .tongue-tie-fields { margin-top: 4px; text-align: left; font-size: 0.85em; }
         .save-indicator { font-size: 0.85em; font-weight: bold; color: #2e7d32; }
         .warning-banner { display:none; margin:10px 0; padding:8px 10px; border-radius:6px; background:#fff3cd; color:#7c5d00; border:1px solid #f0d58c; }
         .cell-warning { outline: 2px solid #f0ad4e; }
         .disabled-link { opacity: 0.5; pointer-events: none; cursor: not-allowed; }
+        .toggle-group { margin-top: 6px; }
+        .toggle-label { display: flex; align-items: center; gap: 8px; font-size: 0.85em; }
+        .toggle-label input { display: none; }
+        .toggle-pill {
+            width: 36px; height: 20px; border-radius: 999px; background: #cbd5e1; position: relative;
+            transition: background 0.2s ease;
+        }
+        .toggle-pill::after {
+            content: '';
+            position: absolute; top: 2px; left: 2px;
+            width: 16px; height: 16px; border-radius: 50%;
+            background: #fff; transition: transform 0.2s ease;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+        }
+        .toggle-label input:checked + .toggle-pill { background: #1976d2; }
+        .toggle-label input:checked + .toggle-pill::after { transform: translateX(16px); }
+        .toggle-label input:disabled + .toggle-pill { opacity: 0.6; }
+        .modal-backdrop {
+            position: fixed; inset: 0; background: rgba(15, 23, 42, 0.45);
+            display: none; align-items: center; justify-content: center; z-index: 50;
+        }
+        .modal {
+            background: #fff; padding: 16px 20px; border-radius: 8px; width: 90%; max-width: 420px;
+            box-shadow: 0 12px 28px rgba(0, 0, 0, 0.18);
+        }
+        .modal-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:12px; }
+        .secondary-btn { background: #e2e8f0; color: #1f2937; }
     </style>
 </head>
 <body>
@@ -31,9 +61,8 @@
             <strong>Shift Grid</strong> &mdash; Dr. <%= shiftDoctor.name %>
         </div>
         <div>
-            <a href="/?view=active" data-save-grid="true">Back to Patients</a>
-            <span style="margin:0 8px;">|</span>
-            <a href="/doctors/manage" data-save-grid="true">Manage Doctors</a>
+            <a href="/?view=active" data-save-grid="true" style="margin-right:8px;">Back to Patients</a>
+            <button type="button" id="end-shift-btn">End Shift Verification</button>
         </div>
     </div>
     <div class="save-indicator" id="save-indicator">Saved: --</div>
@@ -74,12 +103,20 @@
                         <% const existingLaceration = slotObj ? slotObj.delivery_vaginal_laceration : 0; %>
                         <% const existingDystocia = slotObj ? slotObj.delivery_shoulder_dystocia : 0; %>
                         <% const existingPlacenta = slotObj ? slotObj.delivery_manual_placenta : 0; %>
+                        <% const existingBmipro = slotObj ? slotObj.delivery_bmipro : 0; %>
                         <% const existingNst = slotObj ? slotObj.triage_non_stress_test : 0; %>
                         <% const existingSpeculum = slotObj ? slotObj.triage_speculum_exam : 0; %>
-                        <% const isLocked = slotObj && slotObj.locked === 1; %>
+                        <% const existingRoundsCare = slotObj ? slotObj.rounds_care_type : ''; %>
+                        <% const existingRoundsSupportive = slotObj ? slotObj.rounds_supportive_care : 0; %>
+                        <% const existingTongueTieSupportive = slotObj ? slotObj.tongue_tie_supportive_care : 0; %>
+                        <% const isGhostLocked = ghost_locks && ghost_locks[slotKey]; %>
+                        <% const isLocked = (slotObj && slotObj.locked === 1) || isGhostLocked; %>
                         <% const hasCommittedAction = existingPatient && existingAction; %>
                         <td data-locked="<%= isLocked ? '1' : '0' %>" data-slot-time="<%= slotKey %>" class="<%= (is_read_only || isLocked) ? 'locked-cell' : '' %>">
                             <div class="slot-time" style="font-size:0.8em; margin-bottom:4px;"><%= slotTime.toLocaleString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }) %></div>
+                            <% if (isGhostLocked) { %>
+                            <div class="muted" style="font-size:0.75em; margin-bottom:4px;">Reserved for confirmed ghost JA</div>
+                            <% } %>
                             <select class="patient-select" name="slot_patient_<%= Math.floor(slotTime.getTime() / 1000) %>" onchange="saveGrid(); applyCellState(this.closest('td'));" <%= (isLocked || is_read_only) ? 'disabled' : '' %>>
                                 <option value="" <%= !existingPatient ? 'selected' : '' %>>--</option>
                                 <% active_patients.forEach((p) => { %>
@@ -92,6 +129,7 @@
                                         data-admitted-at="<%= p.care_admitted_at || '' %>"
                                         data-delivered-at="<%= p.care_delivered_at || '' %>"
                                         data-discharged-at="<%= p.discharge_datetime || '' %>"
+                                        data-patient-type="<%= p.patient_type || 'mother' %>"
                                         <%= p.status !== 'active' ? 'disabled' : '' %>
                                         <%= existingPatient === p.id ? 'selected' : '' %>>
                                     <%= p.initials %> (<%= p.identifier %>)<%= p.status !== 'active' ? ' - archived' : '' %>
@@ -101,6 +139,26 @@
                             <select class="action-select" data-existing-action="<%= existingAction || '' %>" name="slot_action_<%= Math.floor(slotTime.getTime() / 1000) %>" onchange="applyCellState(this.closest('td')); saveGrid();" <%= (isLocked || is_read_only) ? 'disabled' : '' %>>
                                 <option value="" <%= !existingAction ? 'selected' : '' %>>--</option>
                             </select>
+                            <div class="rounds-fields" data-rounds-fields="true" style="display:none;">
+                                <label>Rounds type</label>
+                                <select class="rounds-care-select" name="slot_rounds_care_<%= Math.floor(slotTime.getTime() / 1000) %>" <%= (isLocked || is_read_only) ? 'disabled' : '' %>>
+                                    <option value="" <%= !existingRoundsCare ? 'selected' : '' %>>-- Select rounds type --</option>
+                                    <option value="daily_newborn_care" <%= existingRoundsCare === 'daily_newborn_care' ? 'selected' : '' %>>Daily Newborn Care</option>
+                                    <option value="daily_inpatient_care" <%= existingRoundsCare === 'daily_inpatient_care' ? 'selected' : '' %>>Daily Inpatient Care</option>
+                                </select>
+                                <label style="display:flex; align-items:center; gap:6px; margin-top:6px;">
+                                    <input class="rounds-supportive-input" type="checkbox" name="slot_rounds_supportive_<%= Math.floor(slotTime.getTime() / 1000) %>" value="1"
+                                           <%= existingRoundsSupportive ? 'checked' : '' %> <%= (isLocked || is_read_only) ? 'disabled' : '' %>>
+                                    Supportive Care Visit
+                                </label>
+                            </div>
+                            <div class="tongue-tie-fields" data-tongue-tie-fields="true" style="display:none;">
+                                <label style="display:flex; align-items:center; gap:6px; margin-top:6px;">
+                                    <input class="tongue-tie-supportive-input" type="checkbox" name="slot_tongue_tie_supportive_<%= Math.floor(slotTime.getTime() / 1000) %>" value="1"
+                                           <%= existingTongueTieSupportive ? 'checked' : '' %> <%= (isLocked || is_read_only) ? 'disabled' : '' %>>
+                                    Supportive Care Visit
+                                </label>
+                            </div>
                             <select class="delivery-select" name="slot_delivery_code_<%= Math.floor(slotTime.getTime() / 1000) %>" onchange="saveGrid()" <%= existingAction !== 'delivery' ? 'disabled style="display:none;"' : 'style="display:block;"' %> <%= (isLocked || is_read_only) ? 'disabled' : '' %>>
                                 <% const fallbackDeliveryCode = existingAction === 'delivery' ? (existingDeliveryCode || (existingDelivery === 'ob' ? '87.98B' : (existingDelivery ? '87.98A' : ''))) : ''; %>
                                 <option value="" <%= !fallbackDeliveryCode ? 'selected' : '' %>>-- Select delivery method --</option>
@@ -108,6 +166,17 @@
                                 <option value="87.98B" <%= fallbackDeliveryCode === '87.98B' ? 'selected' : '' %>>87.98B (OB)</option>
                                 <option value="87.98C" <%= fallbackDeliveryCode === '87.98C' ? 'selected' : '' %>>87.98C (FP/MW VBAC)</option>
                             </select>
+                            <select class="bmipro-select" name="slot_delivery_bmipro_<%= Math.floor(slotTime.getTime() / 1000) %>" style="display:none;" <%= (isLocked || is_read_only) ? 'disabled' : '' %>>
+                                <option value="yes" <%= existingBmipro ? 'selected' : '' %>>Yes</option>
+                                <option value="no" <%= existingAction === 'delivery' && !existingBmipro ? 'selected' : '' %>>No</option>
+                            </select>
+                            <div class="toggle-group bmipro-toggle" style="display:none;">
+                                <label class="toggle-label">
+                                    <input type="checkbox" class="bmipro-toggle-input" <%= existingBmipro ? 'checked' : '' %> <%= (isLocked || is_read_only) ? 'disabled' : '' %>>
+                                    <span class="toggle-pill"></span>
+                                    <span>BMIPRO?</span>
+                                </label>
+                            </div>
                             <input class="delivery-time" type="datetime-local" name="slot_delivery_time_<%= Math.floor(slotTime.getTime() / 1000) %>"
                                    value="<%= existingDeliveryTime || slotKey %>"
                                    onchange="saveGrid()"
@@ -162,18 +231,35 @@
             <% }) %>
         </form>
     </div>
+    <div id="verification-modal" class="modal-backdrop" aria-hidden="true" style="display:none;">
+        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="verification-title">
+            <h3 id="verification-title" style="margin:0 0 8px 0;">End of Shift Verification</h3>
+            <div id="verification-body" class="muted" style="margin-bottom:8px;"></div>
+            <div id="verification-question" style="font-weight:bold;"></div>
+            <div class="modal-actions">
+                <button type="button" class="secondary-btn" id="verification-cancel">Cancel</button>
+                <button type="button" id="verification-no">No</button>
+                <button type="button" class="secondary-btn" id="verification-yes">Yes</button>
+            </div>
+        </div>
+    </div>
     <script>
         const ACTIONS_BY_STATUS = {
             Admitted: [
                 { value: 'attended', label: 'Attended', needsTime: false, needsDelivery: false },
                 { value: 'delivery', label: 'Delivery', needsTime: true, needsDelivery: true }
+            ],
+            Delivered: [
+                { value: 'rounds', label: 'Rounds', needsTime: false, needsDelivery: false, needsRounds: true }
             ]
         };
         const ACTION_CONFIG = {
             triage_visit: { label: 'Triage Visit', needsTime: false, needsDelivery: false },
             triage_reassessment: { label: 'Triage Re-assessment', needsTime: false, needsDelivery: false },
             attended: { label: 'Attended', needsTime: false, needsDelivery: false },
-            delivery: { label: 'Delivery', needsTime: true, needsDelivery: true }
+            delivery: { label: 'Delivery', needsTime: true, needsDelivery: true },
+            rounds: { label: 'Rounds', needsTime: false, needsDelivery: false, needsRounds: true },
+            tongue_tie_clip: { label: 'Tongue Tie Clip', needsTime: false, needsDelivery: false, needsTongueTie: true }
         };
 
         function getStatusAtTime(option, slotTime) {
@@ -237,14 +323,23 @@
             const patientSelect = cell.querySelector('.patient-select');
             const actionSelect = cell.querySelector('.action-select');
             const deliverySel = cell.querySelector('.delivery-select');
+            const bmiproSelect = cell.querySelector('.bmipro-select');
+            const bmiproToggle = cell.querySelector('.bmipro-toggle');
+            const bmiproToggleInput = cell.querySelector('.bmipro-toggle-input');
             const deliveryTime = cell.querySelector('.delivery-time');
             const timeLabel = cell.querySelector('.slot-time');
             const triageExtras = cell.querySelector('[data-triage-extras]');
             const triageExtraInputs = cell.querySelectorAll('.triage-extra-input');
             const deliveryExtras = cell.querySelector('[data-delivery-extras]');
             const deliveryExtraInputs = cell.querySelectorAll('.delivery-extra-input');
+            const roundsFields = cell.querySelector('[data-rounds-fields]');
+            const roundsCareSelect = cell.querySelector('.rounds-care-select');
+            const roundsSupportiveInput = cell.querySelector('.rounds-supportive-input');
+            const tongueTieFields = cell.querySelector('[data-tongue-tie-fields]');
+            const tongueTieSupportiveInput = cell.querySelector('.tongue-tie-supportive-input');
 
             const selectedOption = patientSelect ? patientSelect.selectedOptions[0] : null;
+            const patientType = selectedOption ? (selectedOption.getAttribute('data-patient-type') || 'mother') : 'mother';
             const slotTimeRaw = cell.getAttribute('data-slot-time');
             const slotTime = slotTimeRaw ? new Date(slotTimeRaw) : null;
             const status = getStatusAtTime(selectedOption, slotTime);
@@ -283,13 +378,51 @@
                     input.checked = false;
                     input.disabled = true;
                 });
+                if (roundsFields) {
+                    roundsFields.style.display = 'none';
+                }
+                if (roundsCareSelect) {
+                    roundsCareSelect.value = '';
+                    roundsCareSelect.disabled = true;
+                }
+                if (roundsSupportiveInput) {
+                    roundsSupportiveInput.checked = false;
+                    roundsSupportiveInput.disabled = true;
+                }
+                if (tongueTieFields) {
+                    tongueTieFields.style.display = 'none';
+                }
+                if (tongueTieSupportiveInput) {
+                    tongueTieSupportiveInput.checked = false;
+                    tongueTieSupportiveInput.disabled = true;
+                }
                 if (timeLabel) {
                     timeLabel.style.display = 'none';
                 }
                 return;
             }
 
-            if (status === 'Triage') {
+            if (patientType === 'baby') {
+                actions = status === 'Admitted' ? [{
+                    value: 'rounds',
+                    label: ACTION_CONFIG.rounds.label,
+                    needsTime: ACTION_CONFIG.rounds.needsTime,
+                    needsDelivery: ACTION_CONFIG.rounds.needsDelivery,
+                    needsRounds: ACTION_CONFIG.rounds.needsRounds
+                }, {
+                    value: 'tongue_tie_clip',
+                    label: ACTION_CONFIG.tongue_tie_clip.label,
+                    needsTime: ACTION_CONFIG.tongue_tie_clip.needsTime,
+                    needsDelivery: ACTION_CONFIG.tongue_tie_clip.needsDelivery,
+                    needsTongueTie: ACTION_CONFIG.tongue_tie_clip.needsTongueTie
+                }] : [];
+                if (!currentAction && actions.length) {
+                    actionSelect.setAttribute('data-existing-action', 'rounds');
+                    currentAction = 'rounds';
+                }
+            }
+
+            if (patientType !== 'baby' && status === 'Triage') {
                 const triageAction = selectedOption ? selectedOption.getAttribute('data-triage-action') : '';
                 if (triageAction && ACTION_CONFIG[triageAction]) {
                     actions = [{
@@ -344,11 +477,27 @@
             const actionMeta = selectedAction || ACTION_CONFIG[actionSelect.value] || null;
             const showDelivery = actionMeta && actionMeta.needsDelivery;
             const showTime = actionMeta && actionMeta.needsTime;
+            const showRounds = actionMeta && actionMeta.needsRounds;
+            const showTongueTie = actionMeta && actionMeta.needsTongueTie;
 
             if (deliverySel) {
                 deliverySel.style.display = showDelivery ? 'block' : 'none';
                 if (!showDelivery) deliverySel.value = '';
                 deliverySel.disabled = !showDelivery || locked;
+            }
+            if (bmiproSelect) {
+                bmiproSelect.style.display = 'none';
+                if (!showDelivery) bmiproSelect.value = '';
+                bmiproSelect.disabled = !showDelivery || locked;
+            }
+            if (bmiproToggle) {
+                bmiproToggle.style.display = showDelivery ? 'block' : 'none';
+                if (!showDelivery && bmiproToggleInput) {
+                    bmiproToggleInput.checked = false;
+                }
+                if (bmiproToggleInput) {
+                    bmiproToggleInput.disabled = !showDelivery || locked;
+                }
             }
             if (deliveryTime) {
                 deliveryTime.style.display = showTime ? 'block' : 'none';
@@ -382,6 +531,33 @@
                         input.onchange = () => saveGrid();
                     }
                 });
+            }
+            if (roundsFields) {
+                roundsFields.style.display = showRounds ? 'block' : 'none';
+            }
+            if (roundsCareSelect) {
+                if (!showRounds) roundsCareSelect.value = '';
+                roundsCareSelect.disabled = !showRounds || locked;
+                if (showRounds) {
+                    roundsCareSelect.onchange = () => saveGrid();
+                }
+            }
+            if (roundsSupportiveInput) {
+                if (!showRounds) roundsSupportiveInput.checked = false;
+                roundsSupportiveInput.disabled = !showRounds || locked;
+                if (showRounds) {
+                    roundsSupportiveInput.onchange = () => saveGrid();
+                }
+            }
+            if (tongueTieFields) {
+                tongueTieFields.style.display = showTongueTie ? 'block' : 'none';
+            }
+            if (tongueTieSupportiveInput) {
+                if (!showTongueTie) tongueTieSupportiveInput.checked = false;
+                tongueTieSupportiveInput.disabled = !showTongueTie || locked;
+                if (showTongueTie) {
+                    tongueTieSupportiveInput.onchange = () => saveGrid();
+                }
             }
         }
         function setSavingIndicator() {
@@ -426,6 +602,12 @@
                         cell.classList.add('cell-warning');
                         return;
                     }
+                    const bmiproSelect = cell.querySelector('.bmipro-select');
+                    if (bmiproSelect && !bmiproSelect.disabled && !bmiproSelect.value) {
+                        warnings.push('Select BMIPRO Yes/No for each delivery slot.');
+                        cell.classList.add('cell-warning');
+                        return;
+                    }
                     const deliveryTimeInput = cell.querySelector('.delivery-time');
                     const slotTimeRaw = cell.getAttribute('data-slot-time');
                     if (deliveryTimeInput && !deliveryTimeInput.disabled && !deliveryTimeInput.value) {
@@ -441,6 +623,14 @@
                             warnings.push('Delivery time must fall within the selected 15-minute slot.');
                             cell.classList.add('cell-warning');
                         }
+                    }
+                }
+                if (action === 'rounds') {
+                    const roundsCareSelect = cell.querySelector('.rounds-care-select');
+                    if (roundsCareSelect && !roundsCareSelect.disabled && !roundsCareSelect.value) {
+                        warnings.push('Select a rounds care type for each rounds slot.');
+                        cell.classList.add('cell-warning');
+                        return;
                     }
                 }
             });
@@ -509,6 +699,19 @@
                 applyCellState(cell);
             }
         });
+        document.querySelectorAll('.bmipro-toggle').forEach((toggle) => {
+            const input = toggle.querySelector('.bmipro-toggle-input');
+            const select = toggle.closest('td') ? toggle.closest('td').querySelector('.bmipro-select') : null;
+            if (!input || !select) return;
+            const sync = () => {
+                select.value = input.checked ? 'yes' : 'no';
+            };
+            sync();
+            input.addEventListener('change', () => {
+                sync();
+                saveGrid();
+            });
+        });
         validateGrid();
         updateSaveIndicator();
         document.addEventListener('visibilitychange', () => {
@@ -519,6 +722,117 @@
         window.addEventListener('beforeunload', () => {
             beaconSave();
         });
+
+        const verificationPatients = <%- JSON.stringify(verification_patients || []) %>;
+        const verificationModal = document.getElementById('verification-modal');
+        const verificationBody = document.getElementById('verification-body');
+        const verificationQuestion = document.getElementById('verification-question');
+        const verificationYes = document.getElementById('verification-yes');
+        const verificationNo = document.getElementById('verification-no');
+        const verificationCancel = document.getElementById('verification-cancel');
+        const endShiftBtn = document.getElementById('end-shift-btn');
+
+        const questionForStatus = (status, hasContinuousMonitoring) => {
+            if (status === 'Triage') {
+                return 'Did you admit this patient?';
+            }
+            if ((status === 'Admitted' || status === 'Delivered') && !hasContinuousMonitoring) {
+                return 'Did you administer an epidural or start continuous monitoring?';
+            }
+            return '';
+        };
+
+        const verificationQueue = verificationPatients
+            .map((patient) => ({
+                ...patient,
+                question: questionForStatus(patient.last_status, patient.has_continuous_monitoring)
+            }));
+
+        let verificationIndex = 0;
+        const nextVerification = () => {
+            if (!verificationQueue.length) {
+                if (verificationBody) {
+                    verificationBody.textContent = 'No verification questions for current active patients.';
+                }
+                if (verificationQuestion) {
+                    verificationQuestion.textContent = 'Finish shift and set all doctors to inactive?';
+                }
+                if (verificationYes) {
+                    verificationYes.style.display = 'inline-flex';
+                }
+                if (verificationModal) {
+                    verificationModal.style.display = 'flex';
+                    verificationModal.setAttribute('aria-hidden', 'false');
+                }
+                return;
+            }
+            if (verificationIndex < verificationQueue.length) {
+                const patient = verificationQueue[verificationIndex];
+                if (verificationBody) {
+                    verificationBody.textContent = `Patient #${patient.id} — ${patient.initials} (${patient.identifier}) (${verificationIndex + 1}/${verificationQueue.length})`;
+                }
+                if (verificationQuestion) {
+                    verificationQuestion.textContent = patient.question || 'No verification questions for this patient.';
+                }
+                if (verificationNo) {
+                    verificationNo.textContent = patient.question ? 'No' : 'Next';
+                }
+                if (verificationYes) {
+                    verificationYes.style.display = patient.question ? 'inline-flex' : 'none';
+                }
+                if (verificationModal) {
+                    verificationModal.style.display = 'flex';
+                    verificationModal.setAttribute('aria-hidden', 'false');
+                }
+                return;
+            }
+            if (verificationModal) {
+                verificationModal.style.display = 'none';
+                verificationModal.setAttribute('aria-hidden', 'true');
+            }
+            fetch('/shift_grid/end_shift', {
+                method: 'POST',
+                headers: { 'X-Requested-With': 'fetch' }
+            }).finally(() => {
+                window.location = '/doctors/manage';
+            });
+        };
+
+        if (endShiftBtn) {
+            endShiftBtn.addEventListener('click', () => {
+                verificationIndex = 0;
+                nextVerification();
+            });
+        }
+        if (verificationCancel) {
+            verificationCancel.addEventListener('click', () => {
+                if (verificationModal) {
+                    verificationModal.style.display = 'none';
+                    verificationModal.setAttribute('aria-hidden', 'true');
+                }
+            });
+        }
+        if (verificationNo) {
+            verificationNo.addEventListener('click', () => {
+                if (!verificationQueue.length) {
+                    nextVerification();
+                    return;
+                }
+                verificationIndex += 1;
+                nextVerification();
+            });
+        }
+        if (verificationYes) {
+            verificationYes.addEventListener('click', () => {
+                if (!verificationQueue.length) {
+                    nextVerification();
+                    return;
+                }
+                const patient = verificationQueue[verificationIndex];
+                if (!patient || !patient.question) return;
+                window.location = `/?view=active&selected_patient=${patient.id}`;
+            });
+        }
     </script>
 </body>
 </html>

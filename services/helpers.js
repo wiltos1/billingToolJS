@@ -157,6 +157,7 @@ const cleanupOldShiftData = (days = 4) => {
   const cutoffStr = formatLocalDateTime(cutoff);
   dbRun('DELETE FROM shift_slots WHERE start_time < ?', [cutoffStr]);
   dbRun('DELETE FROM shift_windows WHERE end_datetime < ?', [cutoffStr]);
+  dbRun('DELETE FROM ghost_ja_locks WHERE start_time < ?', [cutoffStr]);
 };
 
 const formatCurrency = (value) => {

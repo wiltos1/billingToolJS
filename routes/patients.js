@@ -18,12 +18,69 @@ const { buildOptimizedBillings } = require('../services/rules');
 
 const router = express.Router();
 
+const babyIdentifierFor = (patient) => {
+  if (!patient) return '';
+  const base = (patient.identifier || '').trim();
+  return base ? `${base} - [baby]` : '[baby]';
+};
+
+const getBabyPatient = (motherId) => {
+  if (!motherId) return null;
+  return dbGet(
+    'SELECT * FROM patients WHERE parent_patient_id = ? AND patient_type = ? ORDER BY id LIMIT 1',
+    [motherId, 'baby']
+  );
+};
+
+const upsertBabyForDelivery = (mother, deliveredAt) => {
+  if (!mother || !deliveredAt) return null;
+  const deliveredStr = formatLocalDateTime(deliveredAt);
+  if (!deliveredStr) return null;
+  const babyIdentifier = babyIdentifierFor(mother);
+  const existing = getBabyPatient(mother.id);
+  if (existing) {
+    dbRun(
+      `UPDATE patients
+       SET initials = ?, identifier = ?, start_datetime = ?, care_status = ?,
+           care_admitted_at = ?, status = ?
+       WHERE id = ?`,
+      [
+        mother.initials,
+        babyIdentifier,
+        deliveredStr,
+        'Admitted',
+        deliveredStr,
+        'active',
+        existing.id,
+      ]
+    );
+    return existing;
+  }
+  const result = dbRun(
+    `INSERT INTO patients
+     (initials, identifier, start_datetime, care_status, care_admitted_at, status, patient_type, parent_patient_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      mother.initials,
+      babyIdentifier,
+      deliveredStr,
+      'Admitted',
+      deliveredStr,
+      'active',
+      'baby',
+      mother.id,
+    ]
+  );
+  return dbGet('SELECT * FROM patients WHERE id = ?', [result.lastInsertRowid]);
+};
+
 const getSelectedPatient = (req, statusFilter) => {
   const sessionKey = `last_patient_${statusFilter}`;
   let patientId = parseInt(req.query.selected_patient || req.session[sessionKey], 10);
   if (!Number.isNaN(patientId)) {
     const patient = dbGet(
-      'SELECT * FROM patients WHERE id = ? AND status = ?',
+      `SELECT * FROM patients
+       WHERE id = ? AND status = ? AND (patient_type IS NULL OR patient_type != 'baby')`,
       [patientId, statusFilter]
     );
     if (patient) {
@@ -33,7 +90,9 @@ const getSelectedPatient = (req, statusFilter) => {
   }
 
   const fallback = dbGet(
-    'SELECT * FROM patients WHERE status = ? ORDER BY id LIMIT 1',
+    `SELECT * FROM patients
+     WHERE status = ? AND (patient_type IS NULL OR patient_type != 'baby')
+     ORDER BY id LIMIT 1`,
     [statusFilter]
   );
   if (fallback) {
@@ -55,11 +114,15 @@ router.get('/', requireLogin, (req, res) => {
   const currentShiftDoctor = getShiftDoctor();
 
   const activePatients = dbAll(
-    'SELECT * FROM patients WHERE status = ? ORDER BY id',
+    `SELECT * FROM patients
+     WHERE status = ? AND (patient_type IS NULL OR patient_type != 'baby')
+     ORDER BY id`,
     ['active']
   );
   const archivedPatients = dbAll(
-    'SELECT * FROM patients WHERE status = ? ORDER BY id',
+    `SELECT * FROM patients
+     WHERE status = ? AND (patient_type IS NULL OR patient_type != 'baby')
+     ORDER BY id`,
     ['discharged']
   );
 
@@ -71,7 +134,12 @@ router.get('/', requireLogin, (req, res) => {
   let statusDtDefault = now;
   const optimizationError = req.query.opt_error;
 
+  let babyPatient = null;
+  let babyStatusTimelineRows = [];
+  let babyTimelineEntries = [];
+
   if (selectedPatient) {
+    babyPatient = getBabyPatient(selectedPatient.id);
     patientBillings = dbAll(
       `SELECT b.*, d.name as doctor_name
        FROM billings b
@@ -214,8 +282,14 @@ router.get('/', requireLogin, (req, res) => {
       delivery: 'Delivery',
       triage_visit: 'Triage Visit',
       triage_reassessment: 'Triage Re-assessment',
+      rounds: 'Rounds',
+      tongue_tie_clip: 'Tongue Tie Clip',
     };
-    const actionRows = shiftEntries.map((slot) => {
+    const roundsCareLabels = {
+      daily_newborn_care: 'Daily Newborn Care',
+      daily_inpatient_care: 'Daily Inpatient Care',
+    };
+    const buildActionRows = (slots) => slots.map((slot) => {
       let deliveryLabel = '';
       if (slot.delivery_code) {
         deliveryLabel = slot.delivery_code;
@@ -230,6 +304,14 @@ router.get('/', requireLogin, (req, res) => {
         if (slot.delivery_vaginal_laceration) extras.push('Extensive vaginal laceration');
         if (slot.delivery_shoulder_dystocia) extras.push('Shoulder dystocia');
         if (slot.delivery_manual_placenta) extras.push('Manual removal of placenta');
+      }
+      if (rawAction === 'rounds') {
+        const careLabel = roundsCareLabels[slot.rounds_care_type] || '';
+        if (careLabel) extras.push(careLabel);
+        if (slot.rounds_supportive_care) extras.push('Supportive Care Visit');
+      }
+      if (rawAction === 'tongue_tie_clip') {
+        if (slot.tongue_tie_supportive_care) extras.push('Supportive Care Visit');
       }
       if (rawAction === 'triage_visit' || rawAction === 'triage_reassessment') {
         if (slot.triage_non_stress_test) extras.push('Non-stress test');
@@ -247,8 +329,44 @@ router.get('/', requireLogin, (req, res) => {
       };
     });
 
+    const actionRows = buildActionRows(shiftEntries);
     timelineEntries = statusRows.concat(actionRows).filter((e) => e.time);
     timelineEntries.sort((a, b) => (a.time - b.time) || ((a.order || 0) - (b.order || 0)));
+
+    if (babyPatient) {
+      const babyAdmittedAt = toDate(babyPatient.care_admitted_at) || toDate(babyPatient.start_datetime);
+      if (babyAdmittedAt) {
+        babyStatusTimelineRows = [{
+          label: 'Admitted',
+          date_value: formatDate(babyAdmittedAt),
+          time_value: formatTime(babyAdmittedAt),
+        }];
+        babyTimelineEntries = [{
+          time: babyAdmittedAt,
+          doctor: null,
+          doctor_name: '',
+          action: 'Admitted',
+          delivery_by: '',
+          status_row: true,
+          order: 1,
+        }];
+      }
+      const babyShiftEntries = dbAll(
+        `SELECT s.*, d.name as doctor_name
+         FROM shift_slots s
+         LEFT JOIN doctors d ON s.doctor_id = d.id
+         WHERE s.patient_id = ?
+         ORDER BY s.start_time`,
+        [babyPatient.id]
+      ).map((s) => ({
+        ...s,
+        doctor: s.doctor_name ? { id: s.doctor_id, name: s.doctor_name } : null,
+      }));
+      const babyActionRows = buildActionRows(babyShiftEntries);
+      const babyTimeline = babyTimelineEntries.concat(babyActionRows).filter((e) => e.time);
+      babyTimeline.sort((a, b) => (a.time - b.time) || ((a.order || 0) - (b.order || 0)));
+      babyTimelineEntries = babyTimeline;
+    }
   }
 
   const triageDt = selectedPatient ? toDate(selectedPatient.start_datetime) : null;
@@ -364,6 +482,9 @@ router.get('/', requireLogin, (req, res) => {
     current_view: currentView,
     current_shift_doctor: currentShiftDoctor,
     selected_patient: selectedWithDisplay,
+    baby_patient: babyPatient,
+    baby_status_timeline_rows: babyStatusTimelineRows,
+    baby_timeline_entries: babyTimelineEntries,
     active_patients: activePatients,
     archived_patients: archivedPatients,
     patient_billings: patientBillings,
@@ -409,9 +530,9 @@ router.post('/patients', requireLogin, (req, res) => {
   const startDt = parseDateTime(startDate, startTime);
   const result = dbRun(
     `INSERT INTO patients
-      (initials, identifier, start_datetime, status, care_status)
-     VALUES (?, ?, ?, ?, ?)`,
-    [initials, identifier, formatLocalDateTime(startDt), 'active', 'Triage']
+      (initials, identifier, start_datetime, status, care_status, patient_type)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [initials, identifier, formatLocalDateTime(startDt), 'active', 'Triage', 'mother']
   );
 
   return res.redirect(`/?view=active&selected_patient=${result.lastInsertRowid}`);
@@ -466,6 +587,7 @@ router.post('/patients/:pid/discharge', requireLogin, (req, res) => {
        WHERE id = ?`,
       [formatLocalDateTime(dischargeDt), 'Delivered', deliveredAt, pid]
     );
+    upsertBabyForDelivery(patient, toDate(deliveredAt));
 
     optimizeBillings(pid);
   }
@@ -478,6 +600,9 @@ router.post('/patients/:pid/restore', requireLogin, (req, res) => {
   const patient = dbGet('SELECT * FROM patients WHERE id = ?', [pid]);
   if (patient && patient.status === 'discharged') {
     dbRun('UPDATE patients SET status = ? WHERE id = ?', ['active', pid]);
+    dbRun('UPDATE shift_slots SET locked = 0 WHERE patient_id = ?', [pid]);
+    dbRun('DELETE FROM ghost_ja_locks WHERE patient_id = ?', [pid]);
+    dbRun('DELETE FROM confirmed_billings WHERE patient_id = ?', [pid]);
   }
   return res.redirect(`/?view=active&selected_patient=${pid}`);
 });
@@ -485,6 +610,7 @@ router.post('/patients/:pid/restore', requireLogin, (req, res) => {
 router.post('/patients/:pid/delete', requireLogin, (req, res) => {
   const pid = parseInt(req.params.pid, 10);
   const view = req.body.view || 'active';
+  dbRun('DELETE FROM patients WHERE parent_patient_id = ?', [pid]);
   dbRun('DELETE FROM patients WHERE id = ?', [pid]);
   return res.redirect(`/?view=${view}`);
 });
@@ -787,6 +913,9 @@ router.post('/patients/:pid/timeline', requireLogin, (req, res) => {
       pid,
     ]
   );
+  if (deliveredDt) {
+    upsertBabyForDelivery(patient, deliveredDt);
+  }
 
   return res.redirect(`/?view=active&selected_patient=${pid}`);
 });

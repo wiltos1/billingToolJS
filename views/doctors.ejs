@@ -92,15 +92,6 @@
     </div>
 
     <div class="card">
-        <h3>Add Doctor</h3>
-        <form action="/doctors" method="post">
-            <label>Name</label>
-            <input type="text" name="doctor_name" required>
-            <button>Add Doctor</button>
-        </form>
-    </div>
-
-    <div class="card">
         <h3>Recent Shift Grids (Last 4 Days)</h3>
         <% if (recent_shift_windows && recent_shift_windows.length) { %>
         <table>
@@ -110,7 +101,6 @@
                 <td>Dr. <%= win.doctor_name || 'Unknown' %> <% if (win.is_active) { %><span class="muted">(active)</span><% } %></td>
                 <td><%= format_display_24(new Date(win.start_datetime)) %> to <%= format_display_24(new Date(win.end_datetime)) %></td>
                 <td>
-                    <a href="/shift_grid?window_id=<%= win.id %>">View</a>
                     <form action="/doctors/activate_shift" method="post" style="display:inline; margin-left:8px;">
                         <input type="hidden" name="window_id" value="<%= win.id %>">
                         <button type="submit">Make Active</button>
@@ -123,6 +113,16 @@
         <p class="muted">No recent shift grids.</p>
         <% } %>
     </div>
+
+    <div class="card">
+        <h3>Add Doctor</h3>
+        <form action="/doctors" method="post">
+            <label>Name</label>
+            <input type="text" name="doctor_name" required>
+            <button>Add Doctor</button>
+        </form>
+    </div>
+
 </body>
 <script>
     const radios = document.querySelectorAll('input[name="shift_type"]');

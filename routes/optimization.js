@@ -8,7 +8,7 @@ const {
   getShiftWindowsForRange,
   optimizeBillings,
 } = require('../services/helpers');
-const { buildOptimizedBillings } = require('../services/rules');
+const { buildOptimizedBillings, buildBabyBillings } = require('../services/rules');
 
 const router = express.Router();
 
@@ -85,14 +85,24 @@ const getSelectedPatient = (req) => {
   const sessionKey = 'last_optimization_patient';
   let patientId = parseInt(req.query.selected_patient || req.session[sessionKey], 10);
   if (!Number.isNaN(patientId)) {
-    const patient = dbGet('SELECT * FROM patients WHERE id = ? AND status = ?', [patientId, 'active']);
+    const patient = dbGet(
+      `SELECT * FROM patients
+       WHERE id = ? AND status = ?
+         AND (patient_type IS NULL OR patient_type != 'baby')`,
+      [patientId, 'active']
+    );
     if (patient) {
       req.session[sessionKey] = patient.id;
       return patient;
     }
   }
 
-  const fallback = dbGet('SELECT * FROM patients WHERE status = ? ORDER BY id LIMIT 1', ['active']);
+  const fallback = dbGet(
+    `SELECT * FROM patients
+     WHERE status = ? AND (patient_type IS NULL OR patient_type != 'baby')
+     ORDER BY id LIMIT 1`,
+    ['active']
+  );
   if (fallback) {
     req.session[sessionKey] = fallback.id;
   }
@@ -100,14 +110,25 @@ const getSelectedPatient = (req) => {
 };
 
 router.get('/optimization', requireLogin, (req, res) => {
-  const activePatients = dbAll('SELECT * FROM patients WHERE status = ? ORDER BY id', ['active']);
+  const activePatients = dbAll(
+    `SELECT * FROM patients
+     WHERE status = ? AND (patient_type IS NULL OR patient_type != 'baby')
+     ORDER BY id`,
+    ['active']
+  );
   const selectedPatient = getSelectedPatient(req);
 
   let recommendations = [];
+  let babyRecommendations = [];
+  let babyPatient = null;
   let optimizationError = req.query.opt_error || '';
   const optimizationNotes = [];
 
   if (selectedPatient) {
+    babyPatient = dbGet(
+      'SELECT * FROM patients WHERE parent_patient_id = ? AND patient_type = ? ORDER BY id LIMIT 1',
+      [selectedPatient.id, 'baby']
+    );
     const admitted = toDate(selectedPatient.care_admitted_at);
     const delivered = toDate(selectedPatient.care_delivered_at);
     if (!optimizationError && (!admitted || !delivered)) {
@@ -233,7 +254,7 @@ router.get('/optimization', requireLogin, (req, res) => {
         }
 
         if (has1399JA) {
-          optimizationNotes.push(`13.99JA billed for up to 12 weighted slots within the active shift window; unmodified entries start at the first attended time, and none are billed within ${DELIVERY_BUFFER_MINUTES} minutes before delivery.`);
+          optimizationNotes.push(`13.99JA billed for up to 12 weighted slots within the active shift window; unmodified entries are allowed before the first attended time, and none are billed within ${DELIVERY_BUFFER_MINUTES} minutes before delivery.`);
         } else if (has0303AR) {
           optimizationNotes.push('OB/VBAC deliveries use 03.03AR for attended slots instead of 13.99JA.');
         } else if (!activeShiftWindow) {
@@ -446,6 +467,9 @@ router.get('/optimization', requireLogin, (req, res) => {
         optimizationError = 'No eligible billing slots found within the Admitted-to-Delivered window.';
       }
     }
+    if (babyPatient) {
+      babyRecommendations = buildBabyBillings(babyPatient);
+    }
   }
 
   return res.render('optimization', {
@@ -453,6 +477,8 @@ router.get('/optimization', requireLogin, (req, res) => {
     active_patients: activePatients,
     selected_patient: selectedPatient,
     recommendations,
+    baby_patient: babyPatient,
+    baby_recommendations: babyRecommendations,
     optimization_error: optimizationError,
     optimization_notes: optimizationNotes,
     format_display: formatDisplay,
@@ -461,7 +487,12 @@ router.get('/optimization', requireLogin, (req, res) => {
 
 router.post('/optimization/:pid/confirm', requireLogin, (req, res) => {
   const pid = parseInt(req.params.pid, 10);
-  const patient = dbGet('SELECT * FROM patients WHERE id = ? AND status = ?', [pid, 'active']);
+  const patient = dbGet(
+    `SELECT * FROM patients
+     WHERE id = ? AND status = ?
+       AND (patient_type IS NULL OR patient_type != 'baby')`,
+    [pid, 'active']
+  );
   if (!patient) {
     return res.redirect('/optimization');
   }
@@ -493,6 +524,7 @@ router.post('/optimization/:pid/confirm', requireLogin, (req, res) => {
   }
 
   dbRun('DELETE FROM confirmed_billings WHERE patient_id = ?', [pid]);
+  dbRun('DELETE FROM ghost_ja_locks WHERE patient_id = ?', [pid]);
   recommendations.forEach((rec) => {
     dbRun(
       'INSERT INTO confirmed_billings (patient_id, doctor_id, code, modifier, timestamp) VALUES (?, ?, ?, ?, ?)',
@@ -503,6 +535,34 @@ router.post('/optimization/:pid/confirm', requireLogin, (req, res) => {
         rec.modifier || '',
         formatLocalDateTime(rec.time),
       ]
+    );
+  });
+
+  const startStr = formatLocalDateTime(startPoint);
+  const endStr = formatLocalDateTime(triageWindowEnd);
+  const shiftSlots = dbAll(
+    `SELECT doctor_id, start_time FROM shift_slots
+     WHERE start_time >= ? AND start_time <= ?`,
+    [startStr, endStr]
+  );
+  const occupiedKeys = new Set(
+    shiftSlots
+      .map((slot) => {
+        const key = formatLocalDateTime(toDate(slot.start_time));
+        return key ? `${slot.doctor_id}|${key}` : null;
+      })
+      .filter((key) => key)
+  );
+
+  recommendations.forEach((rec) => {
+    if (rec.code !== '13.99JA' || !rec.doctor) return;
+    const slotKey = formatLocalDateTime(rec.time);
+    if (!slotKey) return;
+    const composite = `${rec.doctor.id}|${slotKey}`;
+    if (occupiedKeys.has(composite)) return;
+    dbRun(
+      'INSERT INTO ghost_ja_locks (patient_id, doctor_id, start_time) VALUES (?, ?, ?)',
+      [pid, rec.doctor.id, slotKey]
     );
   });
 
