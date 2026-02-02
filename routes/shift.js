@@ -13,6 +13,16 @@ const {
 
 const router = express.Router();
 
+const buildQuarterSlots = (start, end) => {
+  const slots = [];
+  let cursor = new Date(start);
+  while (cursor < end) {
+    slots.push(new Date(cursor));
+    cursor = new Date(cursor.getTime() + 15 * 60 * 1000);
+  }
+  return slots;
+};
+
 const getTriageAction = (patientId, doctorId) => {
   if (!patientId || !doctorId) return 'triage_visit';
   const seenByOther = dbGet(
@@ -38,7 +48,7 @@ const getBabyForMother = (motherId) => {
   );
 };
 
-const upsertBabyForDelivery = (mother, deliveredAt) => {
+const upsertBabyForDelivery = (mother, deliveredAt, babyGender = '', resuscitation = null) => {
   if (!mother || !deliveredAt) return;
   const babyIdentifier = babyIdentifierFor(mother);
   const deliveredStr = formatLocalDateTime(deliveredAt);
@@ -48,10 +58,13 @@ const upsertBabyForDelivery = (mother, deliveredAt) => {
     [mother.id, 'baby']
   );
   if (existing) {
+    const resolvedResuscitation = typeof resuscitation === 'number'
+      ? resuscitation
+      : (existing.baby_resuscitation ? 1 : 0);
     dbRun(
       `UPDATE patients
        SET initials = ?, identifier = ?, start_datetime = ?, care_status = ?,
-           care_admitted_at = ?, status = ?
+           care_admitted_at = ?, status = ?, baby_gender = ?, baby_resuscitation = ?
        WHERE id = ?`,
       [
         mother.initials,
@@ -60,16 +73,19 @@ const upsertBabyForDelivery = (mother, deliveredAt) => {
         'Admitted',
         deliveredStr,
         'active',
+        babyGender || existing.baby_gender || null,
+        resolvedResuscitation,
         existing.id,
       ]
     );
     return;
   }
 
+  const resolvedResuscitation = typeof resuscitation === 'number' ? resuscitation : 0;
   dbRun(
     `INSERT INTO patients
-     (initials, identifier, start_datetime, care_status, care_admitted_at, status, patient_type, parent_patient_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+     (initials, identifier, start_datetime, care_status, care_admitted_at, status, patient_type, parent_patient_id, baby_gender, baby_resuscitation)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       mother.initials,
       babyIdentifier,
@@ -79,6 +95,8 @@ const upsertBabyForDelivery = (mother, deliveredAt) => {
       'active',
       'baby',
       mother.id,
+      babyGender || null,
+      resolvedResuscitation,
     ]
   );
 };
@@ -219,6 +237,11 @@ router.get('/shift_grid', requireLogin, (req, res) => {
       existing[slotTime] = slot;
     }
   });
+  const occupiedShiftKeys = new Set(
+    slots
+      .map((slot) => formatLocalDateTime(toDate(slot.start_time)))
+      .filter((key) => key)
+  );
 
   const ghostLocks = {};
   const ghostRows = dbAll(
@@ -319,6 +342,47 @@ router.get('/shift_grid', requireLogin, (req, res) => {
       has_continuous_monitoring: !!patient.has_continuous_monitoring,
     }));
 
+  const otherBillings = dbAll(
+    `SELECT o.*, p.initials as patient_initials, p.identifier as patient_identifier, p.patient_type as patient_type
+     FROM other_billings o
+     LEFT JOIN patients p ON o.patient_id = p.id
+     WHERE o.doctor_id = ? AND o.start_time >= ? AND o.start_time < ?
+     ORDER BY o.start_time DESC`,
+    [shiftDoctor.id, shiftWindow.start_datetime, shiftWindow.end_datetime]
+  );
+  const otherBillingSlots = {};
+  const occupiedOtherKeys = new Set();
+  otherBillings.forEach((entry) => {
+    const start = toDate(entry.start_time);
+    if (!start) return;
+    const end = entry.end_time ? toDate(entry.end_time) : null;
+    const rangeEnd = end && end > start ? end : new Date(start.getTime() + 15 * 60 * 1000);
+    const slotsInRange = buildQuarterSlots(start, rangeEnd);
+    slotsInRange.forEach((slotTime, idx) => {
+      const key = formatLocalDateTime(slotTime);
+      if (!key) return;
+      occupiedOtherKeys.add(key);
+      if (!otherBillingSlots[key]) {
+        otherBillingSlots[key] = {
+          ...entry,
+          is_continuation: idx > 0,
+        };
+      }
+    });
+    if (rangeEnd.getTime() === start.getTime()) {
+      const key = formatLocalDateTime(start);
+      if (key) {
+        occupiedOtherKeys.add(key);
+        if (!otherBillingSlots[key]) {
+          otherBillingSlots[key] = {
+            ...entry,
+            is_continuation: false,
+          };
+        }
+      }
+    }
+  });
+
   return res.render('shift', {
     session: req.session,
     shiftDoctor,
@@ -329,6 +393,9 @@ router.get('/shift_grid', requireLogin, (req, res) => {
     ghost_locks: ghostLocks,
     active_patients: displayPatients,
     verification_patients: verificationPatients,
+    other_billings: otherBillings,
+    other_billing_slots: otherBillingSlots,
+    occupied_slots: Array.from(new Set([...occupiedShiftKeys, ...occupiedOtherKeys])),
     format_local: formatLocalDateTime,
     format_display_24: formatDisplay24,
   });
@@ -481,12 +548,15 @@ router.post('/shift_grid', requireLogin, (req, res) => {
       const laceration = req.body[`slot_delivery_laceration_${ts}`] ? 1 : 0;
       const dystocia = req.body[`slot_delivery_dystocia_${ts}`] ? 1 : 0;
       const placenta = req.body[`slot_delivery_placenta_${ts}`] ? 1 : 0;
+      const babyGender = (req.body[`slot_delivery_baby_gender_${ts}`] || '').trim();
+      const resuscitation = req.body[`slot_delivery_resuscitation_${ts}`] ? 1 : 0;
       if (existingSlot) {
         dbRun(
           `UPDATE shift_slots
            SET patient_id = ?, action = ?, delivery_by = ?, delivery_code = ?, delivery_time = ?,
                delivery_postpartum_hemorrhage = ?, delivery_vacuum = ?, delivery_vaginal_laceration = ?,
                delivery_shoulder_dystocia = ?, delivery_manual_placenta = ?, delivery_bmipro = ?,
+               delivery_baby_gender = ?, delivery_resuscitation = ?,
                rounds_care_type = NULL, rounds_supportive_care = 0,
                triage_non_stress_test = 0, triage_speculum_exam = 0
            WHERE id = ?`,
@@ -502,9 +572,12 @@ router.post('/shift_grid', requireLogin, (req, res) => {
             dystocia,
             placenta,
             bmipro,
+            babyGender || null,
+            resuscitation,
             existingSlot.id,
           ]
         );
+        upsertBabyForDelivery(patient, exactDt, babyGender, resuscitation);
         return;
       }
       if (allowedActions.length > 0) {
@@ -512,8 +585,9 @@ router.post('/shift_grid', requireLogin, (req, res) => {
           `INSERT INTO shift_slots
            (doctor_id, patient_id, start_time, action, delivery_by, delivery_code, delivery_time,
             delivery_postpartum_hemorrhage, delivery_vacuum, delivery_vaginal_laceration,
-            delivery_shoulder_dystocia, delivery_manual_placenta, delivery_bmipro)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            delivery_shoulder_dystocia, delivery_manual_placenta, delivery_bmipro,
+            delivery_baby_gender, delivery_resuscitation)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             shiftDoctor.id,
             patient.id,
@@ -528,8 +602,11 @@ router.post('/shift_grid', requireLogin, (req, res) => {
             dystocia,
             placenta,
             bmipro,
+            babyGender || null,
+            resuscitation,
           ]
         );
+        upsertBabyForDelivery(patient, exactDt, babyGender, resuscitation);
       }
       return;
     }
@@ -618,6 +695,7 @@ router.post('/shift_grid', requireLogin, (req, res) => {
              triage_non_stress_test = ?, triage_speculum_exam = ?,
              rounds_care_type = NULL, rounds_supportive_care = 0,
              tongue_tie_supportive_care = 0,
+             delivery_baby_gender = NULL, delivery_resuscitation = 0,
              delivery_code = NULL, delivery_time = NULL, delivery_bmipro = 0,
              delivery_postpartum_hemorrhage = 0, delivery_vacuum = 0, delivery_vaginal_laceration = 0,
              delivery_shoulder_dystocia = 0, delivery_manual_placenta = 0
@@ -639,6 +717,137 @@ router.post('/shift_grid', requireLogin, (req, res) => {
 
   if (req.headers['x-requested-with'] === 'fetch') {
     return res.status(204).send();
+  }
+  return res.redirect('/shift_grid');
+});
+
+router.post('/shift_grid/other_billing', requireLogin, (req, res) => {
+  const windowId = parseInt(req.body.window_id, 10);
+  const shiftWindow = Number.isNaN(windowId)
+    ? getActiveShiftWindow()
+    : dbGet('SELECT * FROM shift_windows WHERE id = ?', [windowId]);
+  if (!shiftWindow) {
+    return res.redirect('/doctors/manage');
+  }
+  const shiftDoctor = dbGet('SELECT * FROM doctors WHERE id = ?', [shiftWindow.doctor_id]);
+  if (!shiftDoctor) {
+    return res.redirect('/doctors/manage');
+  }
+
+  const action = (req.body.other_action || '').trim();
+  const code = (req.body.other_code || '').trim();
+  const startTime = (req.body.other_start_time || '').trim();
+  const endTime = (req.body.other_end_time || '').trim();
+  const patientId = parseInt(req.body.other_patient_id || '', 10);
+  const cmgpModifier = (req.body.other_cmgp || '').trim();
+  const editId = parseInt(req.body.other_id || '', 10);
+
+  if (!action || !code || !startTime) {
+    return res.redirect('/shift_grid');
+  }
+
+  const startDt = toDate(startTime);
+  const endDt = endTime ? toDate(endTime) : null;
+  const windowStart = toDate(shiftWindow.start_datetime);
+  const windowEnd = toDate(shiftWindow.end_datetime);
+  if (!startDt || !windowStart || !windowEnd || startDt < windowStart || startDt > windowEnd) {
+    return res.redirect('/shift_grid');
+  }
+  if (endTime && (!endDt || endDt <= startDt || endDt > windowEnd)) {
+    return res.redirect('/shift_grid');
+  }
+
+  const rangeEnd = endDt && endDt > startDt ? endDt : new Date(startDt.getTime() + 15 * 60 * 1000);
+  const occupiedSlots = dbAll(
+    `SELECT start_time FROM shift_slots
+     WHERE doctor_id = ? AND start_time >= ? AND start_time < ?`,
+    [shiftDoctor.id, formatLocalDateTime(startDt), formatLocalDateTime(rangeEnd)]
+  ).map((row) => row.start_time);
+  if (occupiedSlots.length) {
+    return res.redirect('/shift_grid');
+  }
+  const otherOverlap = dbAll(
+    `SELECT id FROM other_billings
+     WHERE doctor_id = ?
+       AND start_time < ?
+       AND COALESCE(end_time, start_time) >= ?`,
+    [shiftDoctor.id, formatLocalDateTime(rangeEnd), formatLocalDateTime(startDt)]
+  ).filter((row) => Number.isNaN(editId) || row.id !== editId);
+  if (otherOverlap.length) {
+    return res.redirect('/shift_grid');
+  }
+
+  let resolvedPatientId = Number.isNaN(patientId) ? null : patientId;
+  if (action === 'phone_call') {
+    resolvedPatientId = null;
+  }
+
+  if (action === 'admission') {
+    const patient = resolvedPatientId ? dbGet('SELECT * FROM patients WHERE id = ?', [resolvedPatientId]) : null;
+    if (!patient) return res.redirect('/shift_grid');
+    const deliveredAt = toDate(patient.care_delivered_at);
+    if (deliveredAt && (startDt - deliveredAt) < 24 * 60 * 60 * 1000) {
+      return res.redirect('/shift_grid');
+    }
+    const induction = dbGet(
+      'SELECT 1 FROM patient_status_events WHERE patient_id = ? AND status = ? LIMIT 1',
+      [patient.id, 'Induction']
+    );
+    if (induction) return res.redirect('/shift_grid');
+  }
+
+  if (action === 'surgical_assist') {
+    if (!resolvedPatientId || !endTime) {
+      return res.redirect('/shift_grid');
+    }
+  }
+
+  const modifier = (req.body.other_modifier || '').trim();
+  const payload = [
+    shiftDoctor.id,
+    resolvedPatientId,
+    action,
+    code,
+    formatLocalDateTime(startDt),
+    endDt ? formatLocalDateTime(endDt) : null,
+    modifier || null,
+    cmgpModifier || null,
+    formatLocalDateTime(new Date()),
+  ];
+
+  if (!Number.isNaN(editId)) {
+    dbRun(
+      `UPDATE other_billings
+       SET patient_id = ?, action = ?, code = ?, start_time = ?, end_time = ?, modifier = ?, cmgp_modifier = ?
+       WHERE id = ? AND doctor_id = ?`,
+      [
+        payload[1],
+        payload[2],
+        payload[3],
+        payload[4],
+        payload[5],
+        payload[6],
+        payload[7],
+        editId,
+        shiftDoctor.id,
+      ]
+    );
+  } else {
+    dbRun(
+      `INSERT INTO other_billings
+       (doctor_id, patient_id, action, code, start_time, end_time, modifier, cmgp_modifier, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      payload
+    );
+  }
+
+  return res.redirect('/shift_grid');
+});
+
+router.post('/shift_grid/other_billing/:id/delete', requireLogin, (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isNaN(id)) {
+    dbRun('DELETE FROM other_billings WHERE id = ?', [id]);
   }
   return res.redirect('/shift_grid');
 });

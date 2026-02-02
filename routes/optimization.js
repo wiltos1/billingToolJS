@@ -168,7 +168,9 @@ const summarizeBillingsForGrid = (entries, patientLookup) => {
 
     entriesByPatient.forEach((patientEntries, patientId) => {
       const patient = patientLookup.get(patientId);
-      const patientIdentifier = patient ? patient.identifier : `Patient ${patientId}`;
+      const patientIdentifier = patientId === null || patientId === undefined
+        ? 'N/A'
+        : (patient ? patient.identifier : `Patient ${patientId}`);
       const sortedEntries = patientEntries.slice().sort((a, b) => a.time - b.time);
       const groups = [];
       const activeByCode = new Map();
@@ -234,6 +236,10 @@ const summarizeBillingsForGrid = (entries, patientLookup) => {
               cmgpModifier = cmgpMatch[1];
             }
           });
+          const explicitCmgp = groupEntry.entries.find((e) => e.cmgp_modifier);
+          if (explicitCmgp && explicitCmgp.cmgp_modifier) {
+            cmgpModifier = explicitCmgp.cmgp_modifier.replace(/^CMGP/i, '');
+          }
 
           const firstEntry = groupEntry.entries[0];
           const aaCounts = groupEntry.code === '03.01AA'
@@ -284,6 +290,45 @@ const summarizeBillingsForGrid = (entries, patientLookup) => {
   return tables;
 };
 
+const otherBillingsForPatient = (patientId) => {
+  if (!patientId) return [];
+  const rows = dbAll(
+    `SELECT o.*, d.name as doctor_name
+     FROM other_billings o
+     LEFT JOIN doctors d ON o.doctor_id = d.id
+     WHERE o.patient_id = ?
+     ORDER BY o.start_time`,
+    [patientId]
+  );
+  return rows.map((row) => ({
+    time: toDate(row.start_time),
+    code: row.code,
+    modifier: row.modifier || '',
+    doctor: row.doctor_id ? { id: row.doctor_id, name: row.doctor_name } : null,
+    cmgp_modifier: row.cmgp_modifier || '',
+  }));
+};
+
+const otherBillingsForDoctorWindow = (doctorId, window) => {
+  if (!doctorId || !window) return [];
+  const rows = dbAll(
+    `SELECT o.*, d.name as doctor_name
+     FROM other_billings o
+     LEFT JOIN doctors d ON o.doctor_id = d.id
+     WHERE o.doctor_id = ? AND o.start_time >= ? AND o.start_time < ?
+     ORDER BY o.start_time`,
+    [doctorId, window.start_datetime, window.end_datetime]
+  );
+  return rows.map((row) => ({
+    time: toDate(row.start_time),
+    code: row.code,
+    modifier: row.modifier || '',
+    doctor: row.doctor_id ? { id: row.doctor_id, name: row.doctor_name } : null,
+    cmgp_modifier: row.cmgp_modifier || '',
+    patientId: row.patient_id || null,
+  }));
+};
+
 router.get('/optimization', requireLogin, (req, res) => {
   const viewMode = (req.query.view_mode || 'patient').toLowerCase();
   const isDoctorView = viewMode === 'doctor';
@@ -309,6 +354,18 @@ router.get('/optimization', requireLogin, (req, res) => {
       'SELECT * FROM patients WHERE parent_patient_id = ? AND patient_type = ? ORDER BY id LIMIT 1',
       [selectedPatient.id, 'baby']
     );
+    if (babyPatient && !babyPatient.baby_resuscitation) {
+      const deliverySlot = dbGet(
+        `SELECT delivery_resuscitation FROM shift_slots
+         WHERE patient_id = ? AND action = ?
+         ORDER BY start_time
+         LIMIT 1`,
+        [selectedPatient.id, 'delivery']
+      );
+      if (deliverySlot && deliverySlot.delivery_resuscitation) {
+        babyPatient.baby_resuscitation = 1;
+      }
+    }
     const admitted = toDate(selectedPatient.care_admitted_at);
     const delivered = toDate(selectedPatient.care_delivered_at);
     if (!optimizationError && (!admitted || !delivered)) {
@@ -650,10 +707,18 @@ router.get('/optimization', requireLogin, (req, res) => {
     if (babyPatient) {
       babyRecommendations = buildBabyBillings(babyPatient);
     }
+    const momOtherBillings = otherBillingsForPatient(selectedPatient.id);
+    const babyOtherBillings = babyPatient ? otherBillingsForPatient(babyPatient.id) : [];
+    if (momOtherBillings.length) {
+      recommendations = recommendations.concat(momOtherBillings).sort((a, b) => a.time - b.time);
+    }
+    if (babyOtherBillings.length) {
+      babyRecommendations = babyRecommendations.concat(babyOtherBillings).sort((a, b) => a.time - b.time);
+    }
     const allEntries = [];
-    recommendations.forEach((rec) => {
-      allEntries.push({ ...rec, patientId: selectedPatient.id });
-    });
+      recommendations.forEach((rec) => {
+        allEntries.push({ ...rec, patientId: selectedPatient.id });
+      });
     if (babyPatient) {
       babyRecommendations.forEach((rec) => {
         allEntries.push({ ...rec, patientId: babyPatient.id });
@@ -690,6 +755,7 @@ router.get('/optimization', requireLogin, (req, res) => {
     }
     if (selectedDoctor) {
       req.session[sessionKey] = selectedDoctor.id;
+      const allEntries = [];
       const doctorWindows = dbAll(
         `SELECT start_datetime, end_datetime FROM shift_windows
          WHERE doctor_id = ? AND end_datetime >= ?`,
@@ -707,13 +773,14 @@ router.get('/optimization', requireLogin, (req, res) => {
         rows.forEach((row) => {
           if (row && row.patient_id) attendedIds.add(row.patient_id);
         });
+        const otherRecs = otherBillingsForDoctorWindow(selectedDoctor.id, window);
+        otherRecs.forEach((rec) => allEntries.push(rec));
       });
       const patientIds = Array.from(attendedIds);
       const patients = patientIds.length
         ? dbAll(`SELECT * FROM patients WHERE id IN (${patientIds.map(() => '?').join(',')})`, patientIds)
         : [];
       const patientLookup = new Map(patients.map((patient) => [patient.id, patient]));
-      const allEntries = [];
 
       patients.forEach((patient) => {
         if (patient.patient_type === 'baby') {

@@ -22,6 +22,7 @@
         .rounds-fields { margin-top: 4px; text-align: left; font-size: 0.85em; }
         .rounds-fields label { display: block; margin: 4px 0 2px; }
         .tongue-tie-fields { margin-top: 4px; text-align: left; font-size: 0.85em; }
+        .baby-gender-label { min-width: 30px; display: inline-block; }
         .save-indicator { font-size: 0.85em; font-weight: bold; color: #2e7d32; }
         .warning-banner { display:none; margin:10px 0; padding:8px 10px; border-radius:6px; background:#fff3cd; color:#7c5d00; border:1px solid #f0d58c; }
         .cell-warning { outline: 2px solid #f0ad4e; }
@@ -61,6 +62,7 @@
             <strong>Shift Grid</strong> &mdash; Dr. <%= shiftDoctor.name %>
         </div>
         <div>
+            <button type="button" id="other-billing-btn" style="margin-right:8px;">+Other Billing</button>
             <a href="/?view=active" data-save-grid="true" style="margin-right:8px;">Back to Patients</a>
             <button type="button" id="end-shift-btn">End Shift Verification</button>
         </div>
@@ -104,18 +106,29 @@
                         <% const existingDystocia = slotObj ? slotObj.delivery_shoulder_dystocia : 0; %>
                         <% const existingPlacenta = slotObj ? slotObj.delivery_manual_placenta : 0; %>
                         <% const existingBmipro = slotObj ? slotObj.delivery_bmipro : 0; %>
+                        <% const existingBabyGender = slotObj ? (slotObj.delivery_baby_gender || '') : ''; %>
+                        <% const existingResuscitation = slotObj ? slotObj.delivery_resuscitation : 0; %>
                         <% const existingNst = slotObj ? slotObj.triage_non_stress_test : 0; %>
                         <% const existingSpeculum = slotObj ? slotObj.triage_speculum_exam : 0; %>
                         <% const existingRoundsCare = slotObj ? slotObj.rounds_care_type : ''; %>
                         <% const existingRoundsSupportive = slotObj ? slotObj.rounds_supportive_care : 0; %>
                         <% const existingTongueTieSupportive = slotObj ? slotObj.tongue_tie_supportive_care : 0; %>
                         <% const isGhostLocked = ghost_locks && ghost_locks[slotKey]; %>
-                        <% const isLocked = (slotObj && slotObj.locked === 1) || isGhostLocked; %>
+                        <% const otherBillingSlot = other_billing_slots ? other_billing_slots[slotKey] : null; %>
+                        <% const isLocked = (slotObj && slotObj.locked === 1) || isGhostLocked || !!otherBillingSlot; %>
                         <% const hasCommittedAction = existingPatient && existingAction; %>
                         <td data-locked="<%= isLocked ? '1' : '0' %>" data-slot-time="<%= slotKey %>" class="<%= (is_read_only || isLocked) ? 'locked-cell' : '' %>">
                             <div class="slot-time" style="font-size:0.8em; margin-bottom:4px;"><%= slotTime.toLocaleString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }) %></div>
                             <% if (isGhostLocked) { %>
                             <div class="muted" style="font-size:0.75em; margin-bottom:4px;">Reserved for confirmed ghost JA</div>
+                            <% } %>
+                            <% if (otherBillingSlot) { %>
+                            <div class="muted" style="font-size:0.75em; margin-bottom:4px;">
+                                Other Billing<% if (!otherBillingSlot.is_continuation) { %>: <%= otherBillingSlot.code %><% } %>
+                                <% if (!otherBillingSlot.is_continuation && otherBillingSlot.patient_identifier) { %>
+                                    &mdash; <%= otherBillingSlot.patient_initials %> (<%= otherBillingSlot.patient_identifier %>)
+                                <% } %>
+                            </div>
                             <% } %>
                             <select class="patient-select" name="slot_patient_<%= Math.floor(slotTime.getTime() / 1000) %>" onchange="saveGrid(); applyCellState(this.closest('td'));" <%= (isLocked || is_read_only) ? 'disabled' : '' %>>
                                 <option value="" <%= !existingPatient ? 'selected' : '' %>>--</option>
@@ -177,11 +190,24 @@
                                     <span>BMIPRO?</span>
                                 </label>
                             </div>
+                            <input type="hidden" class="baby-gender-input" name="slot_delivery_baby_gender_<%= Math.floor(slotTime.getTime() / 1000) %>" value="<%= existingBabyGender %>">
+                            <div class="toggle-group baby-gender-toggle" style="display:none;">
+                                <label class="toggle-label">
+                                    <input type="checkbox" class="baby-gender-toggle-input" <%= existingBabyGender === 'Girl' ? 'checked' : '' %> <%= (isLocked || is_read_only) ? 'disabled' : '' %>>
+                                    <span class="toggle-pill"></span>
+                                    <span class="baby-gender-label">Boy</span>
+                                </label>
+                            </div>
                             <input class="delivery-time" type="datetime-local" name="slot_delivery_time_<%= Math.floor(slotTime.getTime() / 1000) %>"
                                    value="<%= existingDeliveryTime || slotKey %>"
                                    onchange="saveGrid()"
                                    <%= existingAction !== 'delivery' ? 'style="display:none;" disabled' : 'style="display:block;"' %> <%= (isLocked || is_read_only) ? 'disabled' : '' %>>
                             <div class="delivery-extras" data-delivery-extras="true" style="display:none;">
+                                <label>
+                                    <input class="delivery-extra-input" type="checkbox" name="slot_delivery_resuscitation_<%= Math.floor(slotTime.getTime() / 1000) %>" value="1"
+                                           <%= existingResuscitation ? 'checked' : '' %> <%= (isLocked || is_read_only) ? 'disabled' : '' %>>
+                                    Resuscitation (13.99F)
+                                </label>
                                 <label>
                                     <input class="delivery-extra-input" type="checkbox" name="slot_delivery_pph_<%= Math.floor(slotTime.getTime() / 1000) %>" value="1"
                                            <%= existingPph ? 'checked' : '' %> <%= (isLocked || is_read_only) ? 'disabled' : '' %>>
@@ -241,6 +267,147 @@
                 <button type="button" id="verification-no">No</button>
                 <button type="button" class="secondary-btn" id="verification-yes">Yes</button>
             </div>
+        </div>
+    </div>
+    <div class="card">
+        <h3 style="margin:0;">Other Billing Log</h3>
+        <% if (other_billings && other_billings.length) { %>
+        <table>
+            <tr>
+                <th>Time</th>
+                <th>Action</th>
+                <th>Code</th>
+                <th>Patient</th>
+                <th>Modifier</th>
+                <th>CMGP</th>
+                <th>Actions</th>
+            </tr>
+            <% other_billings.forEach((entry) => { %>
+            <tr data-other-id="<%= entry.id %>"
+                data-other-action="<%= entry.action %>"
+                data-other-code="<%= entry.code %>"
+                data-other-start="<%= entry.start_time %>"
+                data-other-end="<%= entry.end_time || '' %>"
+                data-other-modifier="<%= entry.modifier || '' %>"
+                data-other-cmgp="<%= entry.cmgp_modifier || '' %>"
+                data-other-patient="<%= entry.patient_id || '' %>">
+                <td><%= format_display_24(new Date(entry.start_time)) %><% if (entry.end_time) { %> - <%= format_display_24(new Date(entry.end_time)) %><% } %></td>
+                <td><%= entry.action.replace(/_/g, ' ') %></td>
+                <td><%= entry.code %></td>
+                <td><%= entry.patient_identifier ? `${entry.patient_initials} (${entry.patient_identifier})` : '-' %></td>
+                <td><%= entry.modifier || '-' %></td>
+                <td><%= entry.cmgp_modifier || '-' %></td>
+                <td>
+                    <button type="button" class="secondary-btn other-billing-edit">Edit</button>
+                    <form action="/shift_grid/other_billing/<%= entry.id %>/delete" method="post" style="display:inline;">
+                        <button type="submit" class="delete-btn">Delete</button>
+                    </form>
+                </td>
+            </tr>
+            <% }) %>
+        </table>
+        <% } else { %>
+        <p class="muted">No other billing entries yet.</p>
+        <% } %>
+    </div>
+    <div id="other-billing-modal" class="modal-backdrop" aria-hidden="true" style="display:none;">
+        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="other-billing-title">
+            <h3 id="other-billing-title" style="margin:0 0 8px 0;">Other Billing</h3>
+            <form id="other-billing-form" method="post" action="/shift_grid/other_billing">
+                <input type="hidden" name="window_id" value="<%= shiftWindow.id %>">
+                <input type="hidden" id="other-billing-id" name="other_id" value="">
+                <input type="hidden" id="other-billing-code" name="other_code" value="">
+                <input type="hidden" id="other-billing-modifier" name="other_modifier" value="">
+                <label>Action</label>
+                <select id="other-billing-action" name="other_action">
+                    <option value="" selected>-- Select action --</option>
+                    <option value="admission">Admission</option>
+                    <option value="supportive_care">Supportive Care Visits</option>
+                    <option value="phone_call">Phone calls</option>
+                    <option value="family_conference">Family Conference</option>
+                    <option value="delivery_detention">Delivery Detention</option>
+                    <option value="surgical_assist">Surgical Assist</option>
+                    <option value="stillborn_exam">Examination of stillborn</option>
+                </select>
+                <div id="other-billing-phone-options" style="display:none;">
+                    <label>Phone Call Code</label>
+                    <select id="other-billing-phone-code">
+                        <option value="" selected>-- Select code --</option>
+                        <option value="03.05JR">03.05JR - physician to patient for test results or management, &lt;10 mins</option>
+                        <option value="03.03CV">03.03CV - physician to patient, &gt;10 mins</option>
+                        <option value="03.01S">03.01S - electronic communication to patient</option>
+                    </select>
+                    <div id="other-billing-cmgp" style="display:none;">
+                        <label>CMGP Modifier (optional)</label>
+                        <select id="other-billing-cmgp-select">
+                            <option value="" selected>--</option>
+                            <option value="CMGP01">CMGP01</option>
+                        </select>
+                    </div>
+                </div>
+                <div id="other-billing-family" style="display:none;">
+                    <label>Family Conference Patient</label>
+                    <select id="other-billing-family-patient" name="other_patient_id">
+                        <option value="" selected>-- Select patient --</option>
+                        <option value="na">N/A</option>
+                        <% active_patients.forEach((p) => { %>
+                        <% if ((p.patient_type || 'mother') !== 'baby' && p.status === 'active') { %>
+                        <option value="<%= p.id %>"><%= p.initials %> (<%= p.identifier %>)</option>
+                        <% } %>
+                        <% }) %>
+                    </select>
+                </div>
+                <div id="other-billing-stillborn" style="display:none;">
+                    <label>Stillborn Baby</label>
+                    <select id="other-billing-stillborn-baby" name="other_patient_id">
+                        <option value="" selected>-- Select baby --</option>
+                        <% active_patients.forEach((p) => { %>
+                        <% if ((p.patient_type || 'mother') === 'baby' && p.status === 'active') { %>
+                        <option value="<%= p.id %>"><%= p.initials %> (<%= p.identifier %>)</option>
+                        <% } %>
+                        <% }) %>
+                    </select>
+                </div>
+                <div id="other-billing-surgical" style="display:none;">
+                    <label>Surgical Assist Patient</label>
+                    <select id="other-billing-surgical-mom" name="other_patient_id">
+                        <option value="" selected>-- Select patient --</option>
+                        <% active_patients.forEach((p) => { %>
+                        <% if ((p.patient_type || 'mother') !== 'baby' && p.status === 'active') { %>
+                        <option value="<%= p.id %>"><%= p.initials %> (<%= p.identifier %>)</option>
+                        <% } %>
+                        <% }) %>
+                    </select>
+                </div>
+                <div id="other-billing-admission" style="display:none;">
+                    <label>Admission Patient</label>
+                    <select id="other-billing-admission-mom" name="other_patient_id">
+                        <option value="" selected>-- Select patient --</option>
+                        <% active_patients.forEach((p) => { %>
+                        <% if ((p.patient_type || 'mother') !== 'baby' && p.status === 'active') { %>
+                        <option value="<%= p.id %>"><%= p.initials %> (<%= p.identifier %>)</option>
+                        <% } %>
+                        <% }) %>
+                    </select>
+                </div>
+                <label>Billing Time</label>
+                <input type="datetime-local" id="other-billing-time" name="other_start_time"
+                       min="<%= format_local(new Date(shiftWindow.start_datetime)) %>"
+                       max="<%= format_local(new Date(shiftWindow.end_datetime)) %>">
+                <div id="other-billing-end-wrap" style="display:none;">
+                    <label>Finish Time</label>
+                    <input type="datetime-local" id="other-billing-end-time" name="other_end_time"
+                           min="<%= format_local(new Date(shiftWindow.start_datetime)) %>"
+                           max="<%= format_local(new Date(shiftWindow.end_datetime)) %>">
+                </div>
+                <div id="other-billing-warning" class="muted" style="margin-top:6px; display:none;">
+                    Time must be within the current on-call window.
+                </div>
+                <div class="modal-actions">
+                    <button type="button" class="secondary-btn" id="other-billing-cancel">Cancel</button>
+                    <button type="submit" id="other-billing-confirm" class="secondary-btn" disabled>Confirm</button>
+                </div>
+            </form>
         </div>
     </div>
     <script>
@@ -326,6 +493,10 @@
             const bmiproSelect = cell.querySelector('.bmipro-select');
             const bmiproToggle = cell.querySelector('.bmipro-toggle');
             const bmiproToggleInput = cell.querySelector('.bmipro-toggle-input');
+            const babyGenderInput = cell.querySelector('.baby-gender-input');
+            const babyGenderToggle = cell.querySelector('.baby-gender-toggle');
+            const babyGenderToggleInput = cell.querySelector('.baby-gender-toggle-input');
+            const babyGenderLabel = cell.querySelector('.baby-gender-label');
             const deliveryTime = cell.querySelector('.delivery-time');
             const timeLabel = cell.querySelector('.slot-time');
             const triageExtras = cell.querySelector('[data-triage-extras]');
@@ -363,6 +534,16 @@
                     deliveryTime.value = slotTimeRaw || '';
                     deliveryTime.style.display = 'none';
                     deliveryTime.disabled = true;
+                }
+                if (babyGenderToggle) {
+                    babyGenderToggle.style.display = 'none';
+                }
+                if (babyGenderToggleInput) {
+                    babyGenderToggleInput.checked = false;
+                    babyGenderToggleInput.disabled = true;
+                }
+                if (babyGenderInput) {
+                    babyGenderInput.value = '';
                 }
                 if (deliveryExtras) {
                     deliveryExtras.style.display = 'none';
@@ -498,6 +679,21 @@
                 if (bmiproToggleInput) {
                     bmiproToggleInput.disabled = !showDelivery || locked;
                 }
+            }
+            if (babyGenderToggle) {
+                babyGenderToggle.style.display = showDelivery ? 'block' : 'none';
+                if (!showDelivery && babyGenderToggleInput) {
+                    babyGenderToggleInput.checked = false;
+                }
+                if (babyGenderToggleInput) {
+                    babyGenderToggleInput.disabled = !showDelivery || locked;
+                }
+                if (babyGenderLabel) {
+                    babyGenderLabel.textContent = babyGenderToggleInput && babyGenderToggleInput.checked ? 'Girl' : 'Boy';
+                }
+            }
+            if (babyGenderInput) {
+                if (!showDelivery) babyGenderInput.value = '';
             }
             if (deliveryTime) {
                 deliveryTime.style.display = showTime ? 'block' : 'none';
@@ -712,6 +908,21 @@
                 saveGrid();
             });
         });
+        document.querySelectorAll('.baby-gender-toggle').forEach((toggle) => {
+            const input = toggle.querySelector('.baby-gender-toggle-input');
+            const hidden = toggle.closest('td') ? toggle.closest('td').querySelector('.baby-gender-input') : null;
+            const label = toggle.closest('td') ? toggle.closest('td').querySelector('.baby-gender-label') : null;
+            if (!input || !hidden) return;
+            const sync = () => {
+                hidden.value = input.checked ? 'Girl' : 'Boy';
+                if (label) label.textContent = input.checked ? 'Girl' : 'Boy';
+            };
+            sync();
+            input.addEventListener('change', () => {
+                sync();
+                saveGrid();
+            });
+        });
         validateGrid();
         updateSaveIndicator();
         document.addEventListener('visibilitychange', () => {
@@ -833,6 +1044,287 @@
                 window.location = `/?view=active&selected_patient=${patient.id}`;
             });
         }
+
+        const otherBillingModal = document.getElementById('other-billing-modal');
+        const otherBillingBtn = document.getElementById('other-billing-btn');
+        const otherBillingCancel = document.getElementById('other-billing-cancel');
+        const otherBillingConfirm = document.getElementById('other-billing-confirm');
+        const otherBillingAction = document.getElementById('other-billing-action');
+        const otherBillingTime = document.getElementById('other-billing-time');
+        const otherBillingEndWrap = document.getElementById('other-billing-end-wrap');
+        const otherBillingEndTime = document.getElementById('other-billing-end-time');
+        const otherBillingWarning = document.getElementById('other-billing-warning');
+        const phoneOptions = document.getElementById('other-billing-phone-options');
+        const phoneCode = document.getElementById('other-billing-phone-code');
+        const cmgpWrap = document.getElementById('other-billing-cmgp');
+        const cmgpSelect = document.getElementById('other-billing-cmgp-select');
+        const familyWrap = document.getElementById('other-billing-family');
+        const familyPatient = document.getElementById('other-billing-family-patient');
+        const stillbornWrap = document.getElementById('other-billing-stillborn');
+        const stillbornBaby = document.getElementById('other-billing-stillborn-baby');
+        const surgicalWrap = document.getElementById('other-billing-surgical');
+        const surgicalMom = document.getElementById('other-billing-surgical-mom');
+        const admissionWrap = document.getElementById('other-billing-admission');
+        const admissionMom = document.getElementById('other-billing-admission-mom');
+        const otherBillingCode = document.getElementById('other-billing-code');
+        const otherBillingModifier = document.getElementById('other-billing-modifier');
+        const otherBillingId = document.getElementById('other-billing-id');
+        const shiftStart = new Date('<%= format_local(new Date(shiftWindow.start_datetime)) %>');
+        const shiftEnd = new Date('<%= format_local(new Date(shiftWindow.end_datetime)) %>');
+        const occupiedSlots = new Set(<%- JSON.stringify(occupied_slots || []) %>);
+        let heldOccupied = [];
+
+        if (otherBillingCancel) {
+            otherBillingCancel.addEventListener('click', () => {
+                if (otherBillingModal) {
+                    otherBillingModal.style.display = 'none';
+                    otherBillingModal.setAttribute('aria-hidden', 'true');
+                }
+                heldOccupied.forEach((key) => occupiedSlots.add(key));
+                heldOccupied = [];
+            });
+        }
+        if (otherBillingConfirm) {
+            otherBillingConfirm.addEventListener('click', () => {
+                if (otherBillingConfirm.disabled) return;
+                if (otherBillingModal) {
+                    otherBillingModal.style.display = 'none';
+                    otherBillingModal.setAttribute('aria-hidden', 'true');
+                }
+                heldOccupied.forEach((key) => occupiedSlots.add(key));
+                heldOccupied = [];
+            });
+        }
+        const resetOtherBilling = () => {
+            if (otherBillingAction) otherBillingAction.value = '';
+            if (phoneCode) phoneCode.value = '';
+            if (cmgpSelect) cmgpSelect.value = '';
+            if (familyPatient) familyPatient.value = '';
+            if (stillbornBaby) stillbornBaby.value = '';
+            if (surgicalMom) surgicalMom.value = '';
+            if (admissionMom) admissionMom.value = '';
+            if (otherBillingTime) otherBillingTime.value = '';
+            if (otherBillingEndTime) otherBillingEndTime.value = '';
+            if (otherBillingCode) otherBillingCode.value = '';
+            if (otherBillingModifier) otherBillingModifier.value = '';
+            if (otherBillingId) otherBillingId.value = '';
+        };
+        const updateOtherBillingVisibility = () => {
+            const action = otherBillingAction ? otherBillingAction.value : '';
+            if (phoneOptions) phoneOptions.style.display = action === 'phone_call' ? 'block' : 'none';
+            if (familyWrap) familyWrap.style.display = action === 'family_conference' ? 'block' : 'none';
+            if (stillbornWrap) stillbornWrap.style.display = action === 'stillborn_exam' ? 'block' : 'none';
+            if (surgicalWrap) surgicalWrap.style.display = action === 'surgical_assist' ? 'block' : 'none';
+            if (admissionWrap) admissionWrap.style.display = action === 'admission' ? 'block' : 'none';
+            if (otherBillingEndWrap) otherBillingEndWrap.style.display = action === 'surgical_assist' ? 'block' : 'none';
+            if (cmgpWrap) {
+                const showCmgp = action === 'phone_call' && phoneCode && phoneCode.value === '03.03CV';
+                cmgpWrap.style.display = showCmgp ? 'block' : 'none';
+                if (!showCmgp && cmgpSelect) cmgpSelect.value = '';
+            }
+        };
+        const computeAdmissionModifier = (time) => {
+            if (!time) return '';
+            const day = time.getDay();
+            const hm = time.getHours() + time.getMinutes() / 60;
+            const isWeekend = day === 0 || day === 6;
+            if (hm >= 22) return 'HANTPM';
+            if (hm < 7) return 'HANTAM';
+            if (isWeekend) {
+                if (hm >= 7 && hm < 22) return 'HAEVWK';
+            } else if (hm >= 17 && hm < 22) {
+                return 'HAEV';
+            }
+            return '';
+        };
+        const isValidOtherBilling = () => {
+            const action = otherBillingAction ? otherBillingAction.value : '';
+            if (!action) return false;
+            const timeVal = otherBillingTime ? otherBillingTime.value : '';
+            if (!timeVal) return false;
+            const time = new Date(timeVal);
+            const inWindow = time >= shiftStart && time <= shiftEnd;
+            if (!inWindow) return false;
+            const slotKey = timeVal;
+            if (occupiedSlots.has(slotKey)) return false;
+            if (action === 'stillborn_exam') {
+                return !!(stillbornBaby && stillbornBaby.value);
+            }
+            if (action === 'family_conference') {
+                return !!(familyPatient && familyPatient.value);
+            }
+            if (action === 'phone_call') {
+                if (!phoneCode || !phoneCode.value) return false;
+            }
+            if (action === 'surgical_assist') {
+                if (!surgicalMom || !surgicalMom.value) return false;
+                const endVal = otherBillingEndTime ? otherBillingEndTime.value : '';
+                if (!endVal) return false;
+                const end = new Date(endVal);
+                if (end <= time || end > shiftEnd) return false;
+                const slots = [];
+                let cursor = new Date(time);
+                while (cursor < end) {
+                    const yyyy = cursor.getFullYear();
+                    const mm = String(cursor.getMonth() + 1).padStart(2, '0');
+                    const dd = String(cursor.getDate()).padStart(2, '0');
+                    const hh = String(cursor.getHours()).padStart(2, '0');
+                    const mi = String(cursor.getMinutes()).padStart(2, '0');
+                    const key = `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
+                    slots.push(key);
+                    cursor = new Date(cursor.getTime() + 15 * 60 * 1000);
+                }
+                if (slots.some((key) => occupiedSlots.has(key))) return false;
+            }
+            if (action === 'admission') {
+                if (!admissionMom || !admissionMom.value) return false;
+            }
+            return true;
+        };
+        const updateOtherBillingState = () => {
+            updateOtherBillingVisibility();
+            const timeVal = otherBillingTime ? otherBillingTime.value : '';
+            let inWindow = false;
+            if (timeVal) {
+                const time = new Date(timeVal);
+                inWindow = time >= shiftStart && time <= shiftEnd;
+            }
+            if (otherBillingWarning) {
+                const blocked = timeVal && (!inWindow || occupiedSlots.has(timeVal));
+                otherBillingWarning.style.display = blocked ? 'block' : 'none';
+                if (blocked) {
+                    otherBillingWarning.textContent = occupiedSlots.has(timeVal)
+                        ? 'Time overlaps an existing shift grid entry.'
+                        : 'Time must be within the current on-call window.';
+                } else {
+                    otherBillingWarning.textContent = 'Time must be within the current on-call window.';
+                }
+            }
+            const action = otherBillingAction ? otherBillingAction.value : '';
+            if (otherBillingCode) {
+                if (action === 'delivery_detention') otherBillingCode.value = '87.98E';
+                else if (action === 'stillborn_exam') otherBillingCode.value = '03.7A';
+                else if (action === 'family_conference') otherBillingCode.value = '03.05JC';
+                else if (action === 'surgical_assist') otherBillingCode.value = '86.9D SA';
+                else if (action === 'admission') otherBillingCode.value = '03.04C';
+                else if (action === 'phone_call') otherBillingCode.value = phoneCode ? phoneCode.value : '';
+                else otherBillingCode.value = '';
+            }
+            if (otherBillingModifier) {
+                if (action === 'phone_call' && phoneCode && phoneCode.value === '03.03CV') {
+                    otherBillingModifier.value = cmgpSelect && cmgpSelect.value ? cmgpSelect.value : '';
+                } else if (action === 'admission' && timeVal) {
+                    const time = new Date(timeVal);
+                    otherBillingModifier.value = computeAdmissionModifier(time);
+                } else {
+                    otherBillingModifier.value = '';
+                }
+            }
+            if (otherBillingConfirm) {
+                otherBillingConfirm.disabled = !isValidOtherBilling();
+                if (otherBillingConfirm.disabled) {
+                    otherBillingConfirm.classList.add('secondary-btn');
+                } else {
+                    otherBillingConfirm.classList.remove('secondary-btn');
+                }
+            }
+        };
+        if (otherBillingBtn && otherBillingModal) {
+            otherBillingBtn.addEventListener('click', () => {
+                resetOtherBilling();
+                updateOtherBillingVisibility();
+                updateOtherBillingState();
+                otherBillingModal.style.display = 'flex';
+                otherBillingModal.setAttribute('aria-hidden', 'false');
+                heldOccupied.forEach((key) => occupiedSlots.add(key));
+                heldOccupied = [];
+            });
+        }
+        if (otherBillingAction) {
+            otherBillingAction.addEventListener('change', () => updateOtherBillingState());
+        }
+        if (phoneCode) {
+            phoneCode.addEventListener('change', () => updateOtherBillingState());
+        }
+        if (cmgpSelect) {
+            cmgpSelect.addEventListener('change', () => updateOtherBillingState());
+        }
+        if (familyPatient) {
+            familyPatient.addEventListener('change', () => updateOtherBillingState());
+        }
+        if (stillbornBaby) {
+            stillbornBaby.addEventListener('change', () => updateOtherBillingState());
+        }
+        if (surgicalMom) {
+            surgicalMom.addEventListener('change', () => updateOtherBillingState());
+        }
+        if (admissionMom) {
+            admissionMom.addEventListener('change', () => updateOtherBillingState());
+        }
+        if (otherBillingTime) {
+            otherBillingTime.addEventListener('change', () => updateOtherBillingState());
+        }
+        if (otherBillingEndTime) {
+            otherBillingEndTime.addEventListener('change', () => updateOtherBillingState());
+        }
+
+        document.querySelectorAll('.other-billing-edit').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                const row = btn.closest('tr');
+                if (!row) return;
+                if (otherBillingId) otherBillingId.value = row.getAttribute('data-other-id') || '';
+                if (otherBillingAction) otherBillingAction.value = row.getAttribute('data-other-action') || '';
+                const start = row.getAttribute('data-other-start') || '';
+                const end = row.getAttribute('data-other-end') || '';
+                if (otherBillingTime) otherBillingTime.value = start;
+                if (otherBillingEndTime) otherBillingEndTime.value = end;
+                const removed = [];
+                if (start) {
+                    const startDt = new Date(start);
+                    const endDt = end ? new Date(end) : new Date(startDt.getTime() + 15 * 60 * 1000);
+                    let cursor = new Date(startDt);
+                    while (cursor < endDt) {
+                        const yyyy = cursor.getFullYear();
+                        const mm = String(cursor.getMonth() + 1).padStart(2, '0');
+                        const dd = String(cursor.getDate()).padStart(2, '0');
+                        const hh = String(cursor.getHours()).padStart(2, '0');
+                        const mi = String(cursor.getMinutes()).padStart(2, '0');
+                        const key = `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
+                        if (occupiedSlots.has(key)) {
+                            occupiedSlots.delete(key);
+                            removed.push(key);
+                        }
+                        cursor = new Date(cursor.getTime() + 15 * 60 * 1000);
+                    }
+                }
+                heldOccupied = removed;
+                const patientId = row.getAttribute('data-other-patient') || '';
+                if (familyPatient) familyPatient.value = patientId;
+                if (stillbornBaby) stillbornBaby.value = patientId;
+                if (surgicalMom) surgicalMom.value = patientId;
+                if (admissionMom) admissionMom.value = patientId;
+                if (phoneCode && row.getAttribute('data-other-action') === 'phone_call') {
+                    phoneCode.value = row.getAttribute('data-other-code') || '';
+                }
+                if (cmgpSelect) {
+                    cmgpSelect.value = row.getAttribute('data-other-cmgp') || '';
+                }
+                updateOtherBillingVisibility();
+                updateOtherBillingState();
+                if (otherBillingModal) {
+                    otherBillingModal.style.display = 'flex';
+                    otherBillingModal.setAttribute('aria-hidden', 'false');
+                }
+            });
+        });
+        document.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape' && otherBillingModal && otherBillingModal.getAttribute('aria-hidden') === 'false') {
+                otherBillingModal.style.display = 'none';
+                otherBillingModal.setAttribute('aria-hidden', 'true');
+                heldOccupied.forEach((key) => occupiedSlots.add(key));
+                heldOccupied = [];
+            }
+        });
     </script>
 </body>
 </html>

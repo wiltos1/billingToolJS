@@ -98,7 +98,9 @@ const ensureSchema = () => {
       status TEXT DEFAULT 'active',
       optimized_total REAL DEFAULT 0,
       patient_type TEXT DEFAULT 'mother',
-      parent_patient_id INTEGER
+      parent_patient_id INTEGER,
+      baby_gender TEXT,
+      baby_resuscitation INTEGER DEFAULT 0
     );
 
     CREATE TABLE IF NOT EXISTS billings (
@@ -122,6 +124,8 @@ const ensureSchema = () => {
       action TEXT DEFAULT 'attended',
       delivery_by TEXT,
       delivery_bmipro INTEGER DEFAULT 0,
+      delivery_baby_gender TEXT,
+      delivery_resuscitation INTEGER DEFAULT 0,
       rounds_care_type TEXT,
       rounds_supportive_care INTEGER DEFAULT 0,
       tongue_tie_supportive_care INTEGER DEFAULT 0,
@@ -169,11 +173,27 @@ const ensureSchema = () => {
       FOREIGN KEY (patient_id) REFERENCES patients(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS other_billings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      doctor_id INTEGER NOT NULL,
+      patient_id INTEGER,
+      action TEXT NOT NULL,
+      code TEXT NOT NULL,
+      start_time TEXT NOT NULL,
+      end_time TEXT,
+      modifier TEXT,
+      cmgp_modifier TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (doctor_id) REFERENCES doctors(id) ON DELETE CASCADE,
+      FOREIGN KEY (patient_id) REFERENCES patients(id) ON DELETE SET NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_shift_slots_start_time ON shift_slots(start_time);
     CREATE INDEX IF NOT EXISTS idx_billings_patient_id ON billings(patient_id);
     CREATE INDEX IF NOT EXISTS idx_confirmed_billings_patient_id ON confirmed_billings(patient_id);
     CREATE INDEX IF NOT EXISTS idx_ghost_ja_locks_doctor_time ON ghost_ja_locks(doctor_id, start_time);
     CREATE INDEX IF NOT EXISTS idx_patient_status_events_patient_id ON patient_status_events(patient_id);
+    CREATE INDEX IF NOT EXISTS idx_other_billings_doctor_time ON other_billings(doctor_id, start_time);
   `);
 
   const patientColumns = dbAll('PRAGMA table_info(patients)');
@@ -196,6 +216,14 @@ const ensureSchema = () => {
   const hasParentPatientId = patientColumns.some((col) => col.name === 'parent_patient_id');
   if (!hasParentPatientId) {
     db.exec('ALTER TABLE patients ADD COLUMN parent_patient_id INTEGER');
+  }
+  const hasBabyGender = patientColumns.some((col) => col.name === 'baby_gender');
+  if (!hasBabyGender) {
+    db.exec('ALTER TABLE patients ADD COLUMN baby_gender TEXT');
+  }
+  const hasBabyResuscitation = patientColumns.some((col) => col.name === 'baby_resuscitation');
+  if (!hasBabyResuscitation) {
+    db.exec('ALTER TABLE patients ADD COLUMN baby_resuscitation INTEGER DEFAULT 0');
   }
   db.exec("UPDATE patients SET patient_type = 'mother' WHERE patient_type IS NULL");
 
@@ -255,6 +283,14 @@ const ensureSchema = () => {
   const hasDeliveryPlacenta = shiftColumns.some((col) => col.name === 'delivery_manual_placenta');
   if (!hasDeliveryPlacenta) {
     db.exec('ALTER TABLE shift_slots ADD COLUMN delivery_manual_placenta INTEGER DEFAULT 0');
+  }
+  const hasDeliveryBabyGender = shiftColumns.some((col) => col.name === 'delivery_baby_gender');
+  if (!hasDeliveryBabyGender) {
+    db.exec('ALTER TABLE shift_slots ADD COLUMN delivery_baby_gender TEXT');
+  }
+  const hasDeliveryResuscitation = shiftColumns.some((col) => col.name === 'delivery_resuscitation');
+  if (!hasDeliveryResuscitation) {
+    db.exec('ALTER TABLE shift_slots ADD COLUMN delivery_resuscitation INTEGER DEFAULT 0');
   }
   const hasRoundsCareType = shiftColumns.some((col) => col.name === 'rounds_care_type');
   if (!hasRoundsCareType) {

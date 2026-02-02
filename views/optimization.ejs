@@ -182,8 +182,16 @@
 
     <% if (selected_patient && baby_patient) { %>
     <div class="card">
-            <h3 style="margin:0;">Baby Billing Codes</h3>
-            <p class="muted" style="margin:6px 0 0;">Patient #<%= baby_patient.id %> &mdash; <%= baby_patient.initials %> / <%= baby_patient.identifier %></p>
+        <h3 style="margin:0;">Baby Billing Codes</h3>
+        <p class="muted" style="margin:6px 0 0;">
+            Patient #<%= baby_patient.id %> &mdash; <%= baby_patient.initials %> / <%= baby_patient.identifier %>
+            <% if (baby_patient.baby_gender) { %>
+                &mdash; <%= baby_patient.baby_gender %>
+            <% } %>
+            <% if (baby_patient.baby_resuscitation) { %>
+                &mdash; Resuscitation
+            <% } %>
+        </p>
             <% if (baby_recommendations && baby_recommendations.length) { %>
             <table>
                 <tr><th>Time</th><th>Code</th><th>Modifier</th><th>Doctor</th></tr>

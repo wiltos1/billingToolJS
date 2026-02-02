@@ -32,17 +32,20 @@ const getBabyPatient = (motherId) => {
   );
 };
 
-const upsertBabyForDelivery = (mother, deliveredAt) => {
+const upsertBabyForDelivery = (mother, deliveredAt, babyGender = '', resuscitation = null) => {
   if (!mother || !deliveredAt) return null;
   const deliveredStr = formatLocalDateTime(deliveredAt);
   if (!deliveredStr) return null;
   const babyIdentifier = babyIdentifierFor(mother);
   const existing = getBabyPatient(mother.id);
   if (existing) {
+    const resolvedResuscitation = typeof resuscitation === 'number'
+      ? resuscitation
+      : (existing.baby_resuscitation ? 1 : 0);
     dbRun(
       `UPDATE patients
        SET initials = ?, identifier = ?, start_datetime = ?, care_status = ?,
-           care_admitted_at = ?, status = ?
+           care_admitted_at = ?, status = ?, baby_gender = ?, baby_resuscitation = ?
        WHERE id = ?`,
       [
         mother.initials,
@@ -51,15 +54,18 @@ const upsertBabyForDelivery = (mother, deliveredAt) => {
         'Admitted',
         deliveredStr,
         'active',
+        babyGender || existing.baby_gender || null,
+        resolvedResuscitation,
         existing.id,
       ]
     );
     return existing;
   }
+  const resolvedResuscitation = typeof resuscitation === 'number' ? resuscitation : 0;
   const result = dbRun(
     `INSERT INTO patients
-     (initials, identifier, start_datetime, care_status, care_admitted_at, status, patient_type, parent_patient_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+     (initials, identifier, start_datetime, care_status, care_admitted_at, status, patient_type, parent_patient_id, baby_gender, baby_resuscitation)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       mother.initials,
       babyIdentifier,
@@ -69,6 +75,8 @@ const upsertBabyForDelivery = (mother, deliveredAt) => {
       'active',
       'baby',
       mother.id,
+      babyGender || null,
+      resolvedResuscitation,
     ]
   );
   return dbGet('SELECT * FROM patients WHERE id = ?', [result.lastInsertRowid]);
@@ -176,6 +184,17 @@ router.get('/', requireLogin, (req, res) => {
     ).map((s) => ({
       ...s,
       doctor: s.doctor_name ? { id: s.doctor_id, name: s.doctor_name } : null,
+    }));
+    const otherBillingEntries = dbAll(
+      `SELECT o.*, d.name as doctor_name
+       FROM other_billings o
+       LEFT JOIN doctors d ON o.doctor_id = d.id
+       WHERE o.patient_id = ?
+       ORDER BY o.start_time`,
+      [selectedPatient.id]
+    ).map((o) => ({
+      ...o,
+      doctor: o.doctor_name ? { id: o.doctor_id, name: o.doctor_name } : null,
     }));
 
     const statusRows = [];
@@ -329,13 +348,40 @@ router.get('/', requireLogin, (req, res) => {
       };
     });
 
-    const actionRows = buildActionRows(shiftEntries);
+    const otherActionRows = otherBillingEntries.map((entry) => {
+      const extras = [];
+      if (entry.end_time) {
+        extras.push(`${formatDisplay(toDate(entry.start_time))} - ${formatDisplay(toDate(entry.end_time))}`);
+      }
+      return {
+        time: toDate(entry.start_time),
+        doctor: entry.doctor,
+        doctor_name: entry.doctor ? entry.doctor.name : '',
+        action: `${entry.code}${entry.modifier ? ` (${entry.modifier})` : ''}`,
+        delivery_by: '',
+        status_row: false,
+        order: 9,
+      };
+    });
+    const actionRows = buildActionRows(shiftEntries).concat(otherActionRows);
     timelineEntries = statusRows.concat(actionRows).filter((e) => e.time);
     timelineEntries.sort((a, b) => (a.time - b.time) || ((a.order || 0) - (b.order || 0)));
 
     if (babyPatient) {
+      if (!babyPatient.baby_resuscitation) {
+        const deliverySlot = dbGet(
+          `SELECT delivery_resuscitation FROM shift_slots
+           WHERE patient_id = ? AND action = ?
+           ORDER BY start_time
+           LIMIT 1`,
+          [selectedPatient.id, 'delivery']
+        );
+        if (deliverySlot && deliverySlot.delivery_resuscitation) {
+          babyPatient.baby_resuscitation = 1;
+        }
+      }
       const babyAdmittedAt = toDate(babyPatient.care_admitted_at) || toDate(babyPatient.start_datetime);
-      if (babyAdmittedAt) {
+      if (babyAdmittedAt && !babyPatient.baby_resuscitation) {
         babyStatusTimelineRows = [{
           label: 'Admitted',
           date_value: formatDate(babyAdmittedAt),
@@ -351,6 +397,17 @@ router.get('/', requireLogin, (req, res) => {
           order: 1,
         }];
       }
+      if (babyPatient.baby_resuscitation && babyAdmittedAt) {
+        babyTimelineEntries = [{
+          time: babyAdmittedAt,
+          doctor: null,
+          doctor_name: '',
+          action: 'Resuscitation',
+          delivery_by: '',
+          status_row: false,
+          order: 1,
+        }];
+      }
       const babyShiftEntries = dbAll(
         `SELECT s.*, d.name as doctor_name
          FROM shift_slots s
@@ -362,8 +419,28 @@ router.get('/', requireLogin, (req, res) => {
         ...s,
         doctor: s.doctor_name ? { id: s.doctor_id, name: s.doctor_name } : null,
       }));
+      const babyOtherEntries = dbAll(
+        `SELECT o.*, d.name as doctor_name
+         FROM other_billings o
+         LEFT JOIN doctors d ON o.doctor_id = d.id
+         WHERE o.patient_id = ?
+         ORDER BY o.start_time`,
+        [babyPatient.id]
+      ).map((o) => ({
+        ...o,
+        doctor: o.doctor_name ? { id: o.doctor_id, name: o.doctor_name } : null,
+      }));
       const babyActionRows = buildActionRows(babyShiftEntries);
-      const babyTimeline = babyTimelineEntries.concat(babyActionRows).filter((e) => e.time);
+      const babyOtherRows = babyOtherEntries.map((entry) => ({
+        time: toDate(entry.start_time),
+        doctor: entry.doctor,
+        doctor_name: entry.doctor ? entry.doctor.name : '',
+        action: `${entry.code}${entry.modifier ? ` (${entry.modifier})` : ''}`,
+        delivery_by: '',
+        status_row: false,
+        order: 9,
+      }));
+      const babyTimeline = babyTimelineEntries.concat(babyActionRows, babyOtherRows).filter((e) => e.time);
       babyTimeline.sort((a, b) => (a.time - b.time) || ((a.order || 0) - (b.order || 0)));
       babyTimelineEntries = babyTimeline;
     }

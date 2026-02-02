@@ -501,6 +501,7 @@ const buildBabyBillings = (babyPatient) => {
   const billings = [];
 
   let deliveryDoctor = null;
+  let resuscitation = babyPatient.baby_resuscitation ? 1 : 0;
   if (babyPatient.parent_patient_id) {
     const deliverySlot = dbGet(
       `SELECT * FROM shift_slots
@@ -512,13 +513,16 @@ const buildBabyBillings = (babyPatient) => {
     if (deliverySlot && deliverySlot.doctor_id) {
       deliveryDoctor = dbGet('SELECT * FROM doctors WHERE id = ?', [deliverySlot.doctor_id]);
     }
+    if (deliverySlot && deliverySlot.delivery_resuscitation) {
+      resuscitation = 1;
+    }
   }
 
   const admittedAt = toDate(babyPatient.care_admitted_at || babyPatient.start_datetime);
   if (admittedAt) {
     billings.push({
       time: admittedAt,
-      code: '03.05G',
+      code: resuscitation ? '13.99F' : '03.05G',
       modifier: '',
       doctor: deliveryDoctor,
     });
