@@ -188,12 +188,44 @@ const ensureSchema = () => {
       FOREIGN KEY (patient_id) REFERENCES patients(id) ON DELETE SET NULL
     );
 
+    CREATE TABLE IF NOT EXISTS diagnostic_codes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      doctor_id INTEGER NOT NULL,
+      patient_id INTEGER,
+      patient_key TEXT NOT NULL,
+      date_of_service TEXT NOT NULL,
+      billing_code TEXT NOT NULL,
+      encounter_number INTEGER NOT NULL,
+      diagnostic_code TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (doctor_id) REFERENCES doctors(id) ON DELETE CASCADE,
+      FOREIGN KEY (patient_id) REFERENCES patients(id) ON DELETE SET NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS billing_call_overrides (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      doctor_id INTEGER NOT NULL,
+      patient_id INTEGER,
+      patient_key TEXT NOT NULL,
+      date_of_service TEXT NOT NULL,
+      billing_code TEXT NOT NULL,
+      encounter_number INTEGER NOT NULL,
+      number_of_calls INTEGER NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (doctor_id) REFERENCES doctors(id) ON DELETE CASCADE,
+      FOREIGN KEY (patient_id) REFERENCES patients(id) ON DELETE SET NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_shift_slots_start_time ON shift_slots(start_time);
     CREATE INDEX IF NOT EXISTS idx_billings_patient_id ON billings(patient_id);
     CREATE INDEX IF NOT EXISTS idx_confirmed_billings_patient_id ON confirmed_billings(patient_id);
     CREATE INDEX IF NOT EXISTS idx_ghost_ja_locks_doctor_time ON ghost_ja_locks(doctor_id, start_time);
     CREATE INDEX IF NOT EXISTS idx_patient_status_events_patient_id ON patient_status_events(patient_id);
     CREATE INDEX IF NOT EXISTS idx_other_billings_doctor_time ON other_billings(doctor_id, start_time);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_diagnostic_codes_unique
+      ON diagnostic_codes(doctor_id, patient_key, date_of_service, billing_code, encounter_number);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_billing_call_overrides_unique
+      ON billing_call_overrides(doctor_id, patient_key, date_of_service, billing_code, encounter_number);
   `);
 
   const patientColumns = dbAll('PRAGMA table_info(patients)');

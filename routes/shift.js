@@ -353,6 +353,10 @@ router.get('/shift_grid', requireLogin, (req, res) => {
   const otherBillingSlots = {};
   const occupiedOtherKeys = new Set();
   otherBillings.forEach((entry) => {
+    const shouldOccupyGrid = entry.action !== 'delivery_detention';
+    if (!shouldOccupyGrid) {
+      return;
+    }
     const start = toDate(entry.start_time);
     if (!start) return;
     const end = entry.end_time ? toDate(entry.end_time) : null;
@@ -742,7 +746,19 @@ router.post('/shift_grid/other_billing', requireLogin, (req, res) => {
   const cmgpModifier = (req.body.other_cmgp || '').trim();
   const editId = parseInt(req.body.other_id || '', 10);
 
+  const allowedActions = new Set([
+    'admission',
+    'phone_call',
+    'family_conference',
+    'delivery_detention',
+    'surgical_assist',
+    'stillborn_exam',
+  ]);
+
   if (!action || !code || !startTime) {
+    return res.redirect('/shift_grid');
+  }
+  if (!allowedActions.has(action)) {
     return res.redirect('/shift_grid');
   }
 
@@ -756,25 +772,37 @@ router.post('/shift_grid/other_billing', requireLogin, (req, res) => {
   if (endTime && (!endDt || endDt <= startDt || endDt > windowEnd)) {
     return res.redirect('/shift_grid');
   }
-
-  const rangeEnd = endDt && endDt > startDt ? endDt : new Date(startDt.getTime() + 15 * 60 * 1000);
-  const occupiedSlots = dbAll(
-    `SELECT start_time FROM shift_slots
-     WHERE doctor_id = ? AND start_time >= ? AND start_time < ?`,
-    [shiftDoctor.id, formatLocalDateTime(startDt), formatLocalDateTime(rangeEnd)]
-  ).map((row) => row.start_time);
-  if (occupiedSlots.length) {
+  if (action === 'delivery_detention' && !endDt) {
     return res.redirect('/shift_grid');
   }
-  const otherOverlap = dbAll(
-    `SELECT id FROM other_billings
-     WHERE doctor_id = ?
-       AND start_time < ?
-       AND COALESCE(end_time, start_time) >= ?`,
-    [shiftDoctor.id, formatLocalDateTime(rangeEnd), formatLocalDateTime(startDt)]
-  ).filter((row) => Number.isNaN(editId) || row.id !== editId);
-  if (otherOverlap.length) {
-    return res.redirect('/shift_grid');
+  if (action === 'delivery_detention') {
+    const detentionMinutes = Math.round((endDt - startDt) / (60 * 1000));
+    if (detentionMinutes < 30) {
+      return res.redirect('/shift_grid');
+    }
+  }
+
+  const rangeEnd = endDt && endDt > startDt ? endDt : new Date(startDt.getTime() + 15 * 60 * 1000);
+  const isDetention = action === 'delivery_detention';
+  if (!isDetention) {
+    const occupiedSlots = dbAll(
+      `SELECT start_time FROM shift_slots
+       WHERE doctor_id = ? AND start_time >= ? AND start_time < ?`,
+      [shiftDoctor.id, formatLocalDateTime(startDt), formatLocalDateTime(rangeEnd)]
+    ).map((row) => row.start_time);
+    if (occupiedSlots.length) {
+      return res.redirect('/shift_grid');
+    }
+    const otherOverlap = dbAll(
+      `SELECT id FROM other_billings
+       WHERE doctor_id = ?
+         AND start_time < ?
+         AND COALESCE(end_time, start_time) >= ?`,
+      [shiftDoctor.id, formatLocalDateTime(rangeEnd), formatLocalDateTime(startDt)]
+    ).filter((row) => Number.isNaN(editId) || row.id !== editId);
+    if (otherOverlap.length) {
+      return res.redirect('/shift_grid');
+    }
   }
 
   let resolvedPatientId = Number.isNaN(patientId) ? null : patientId;

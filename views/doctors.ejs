@@ -105,6 +105,9 @@
                         <input type="hidden" name="window_id" value="<%= win.id %>">
                         <button type="submit">Make Active</button>
                     </form>
+                    <a href="/optimization/doctor/<%= win.doctor_id %>/optimized_pdf?window_id=<%= win.id %>" style="margin-left:8px;">
+                        <button type="button">Download Optimized PDF</button>
+                    </a>
                 </td>
             </tr>
             <% }) %>

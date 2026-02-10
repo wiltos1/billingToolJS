@@ -47,11 +47,14 @@
         .modal-backdrop {
             position: fixed; inset: 0; background: rgba(15, 23, 42, 0.45);
             display: none; align-items: center; justify-content: center; z-index: 50;
+            pointer-events: auto;
         }
         .modal {
             background: #fff; padding: 16px 20px; border-radius: 8px; width: 90%; max-width: 420px;
             box-shadow: 0 12px 28px rgba(0, 0, 0, 0.18);
+            pointer-events: auto;
         }
+        #verification-modal { z-index: 1200; }
         .modal-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:12px; }
         .secondary-btn { background: #e2e8f0; color: #1f2937; }
     </style>
@@ -322,7 +325,6 @@
                 <select id="other-billing-action" name="other_action">
                     <option value="" selected>-- Select action --</option>
                     <option value="admission">Admission</option>
-                    <option value="supportive_care">Supportive Care Visits</option>
                     <option value="phone_call">Phone calls</option>
                     <option value="family_conference">Family Conference</option>
                     <option value="delivery_detention">Delivery Detention</option>
@@ -942,13 +944,15 @@
         const verificationNo = document.getElementById('verification-no');
         const verificationCancel = document.getElementById('verification-cancel');
         const endShiftBtn = document.getElementById('end-shift-btn');
+        const currentDoctorId = <%= shiftDoctor && shiftDoctor.id ? shiftDoctor.id : 'null' %>;
+        const currentWindowId = <%= shiftWindow && shiftWindow.id ? shiftWindow.id : 'null' %>;
 
         const questionForStatus = (status, hasContinuousMonitoring) => {
             if (status === 'Triage') {
                 return 'Did you admit this patient?';
             }
             if ((status === 'Admitted' || status === 'Delivered') && !hasContinuousMonitoring) {
-                return 'Did you administer an epidural or start continuous monitoring?';
+                return 'Did you perform an induction or start continuous monitoring?';
             }
             return '';
         };
@@ -960,6 +964,26 @@
             }));
 
         let verificationIndex = 0;
+        const finalizeEndShift = () => {
+            if (verificationModal) {
+                verificationModal.style.display = 'none';
+                verificationModal.setAttribute('aria-hidden', 'true');
+            }
+            fetch('/shift_grid/end_shift', {
+                method: 'POST',
+                headers: { 'X-Requested-With': 'fetch' }
+            }).finally(() => {
+                if (currentDoctorId && currentWindowId) {
+                    const iframe = document.createElement('iframe');
+                    iframe.style.display = 'none';
+                    iframe.src = `/optimization/doctor/${currentDoctorId}/optimized_pdf?window_id=${currentWindowId}`;
+                    document.body.appendChild(iframe);
+                }
+                setTimeout(() => {
+                    window.location = '/doctors/manage';
+                }, 900);
+            });
+        };
         const nextVerification = () => {
             if (!verificationQueue.length) {
                 if (verificationBody) {
@@ -968,8 +992,12 @@
                 if (verificationQuestion) {
                     verificationQuestion.textContent = 'Finish shift and set all doctors to inactive?';
                 }
+                if (verificationNo) {
+                    verificationNo.style.display = 'none';
+                }
                 if (verificationYes) {
                     verificationYes.style.display = 'inline-flex';
+                    verificationYes.textContent = 'Finish Shift';
                 }
                 if (verificationModal) {
                     verificationModal.style.display = 'flex';
@@ -986,9 +1014,11 @@
                     verificationQuestion.textContent = patient.question || 'No verification questions for this patient.';
                 }
                 if (verificationNo) {
+                    verificationNo.style.display = 'inline-flex';
                     verificationNo.textContent = patient.question ? 'No' : 'Next';
                 }
                 if (verificationYes) {
+                    verificationYes.textContent = 'Yes';
                     verificationYes.style.display = patient.question ? 'inline-flex' : 'none';
                 }
                 if (verificationModal) {
@@ -997,16 +1027,7 @@
                 }
                 return;
             }
-            if (verificationModal) {
-                verificationModal.style.display = 'none';
-                verificationModal.setAttribute('aria-hidden', 'true');
-            }
-            fetch('/shift_grid/end_shift', {
-                method: 'POST',
-                headers: { 'X-Requested-With': 'fetch' }
-            }).finally(() => {
-                window.location = '/doctors/manage';
-            });
+            finalizeEndShift();
         };
 
         if (endShiftBtn) {
@@ -1024,25 +1045,25 @@
             });
         }
         if (verificationNo) {
-            verificationNo.addEventListener('click', () => {
+            verificationNo.onclick = () => {
                 if (!verificationQueue.length) {
-                    nextVerification();
+                    finalizeEndShift();
                     return;
                 }
                 verificationIndex += 1;
                 nextVerification();
-            });
+            };
         }
         if (verificationYes) {
-            verificationYes.addEventListener('click', () => {
+            verificationYes.onclick = () => {
                 if (!verificationQueue.length) {
-                    nextVerification();
+                    finalizeEndShift();
                     return;
                 }
                 const patient = verificationQueue[verificationIndex];
                 if (!patient || !patient.question) return;
                 window.location = `/?view=active&selected_patient=${patient.id}`;
-            });
+            };
         }
 
         const otherBillingModal = document.getElementById('other-billing-modal');
@@ -1116,7 +1137,10 @@
             if (stillbornWrap) stillbornWrap.style.display = action === 'stillborn_exam' ? 'block' : 'none';
             if (surgicalWrap) surgicalWrap.style.display = action === 'surgical_assist' ? 'block' : 'none';
             if (admissionWrap) admissionWrap.style.display = action === 'admission' ? 'block' : 'none';
-            if (otherBillingEndWrap) otherBillingEndWrap.style.display = action === 'surgical_assist' ? 'block' : 'none';
+            if (otherBillingEndWrap) {
+                const needsEndTime = action === 'surgical_assist' || action === 'delivery_detention';
+                otherBillingEndWrap.style.display = needsEndTime ? 'block' : 'none';
+            }
             if (cmgpWrap) {
                 const showCmgp = action === 'phone_call' && phoneCode && phoneCode.value === '03.03CV';
                 cmgpWrap.style.display = showCmgp ? 'block' : 'none';
@@ -1146,7 +1170,7 @@
             const inWindow = time >= shiftStart && time <= shiftEnd;
             if (!inWindow) return false;
             const slotKey = timeVal;
-            if (occupiedSlots.has(slotKey)) return false;
+            if (action !== 'delivery_detention' && occupiedSlots.has(slotKey)) return false;
             if (action === 'stillborn_exam') {
                 return !!(stillbornBaby && stillbornBaby.value);
             }
@@ -1176,6 +1200,14 @@
                 }
                 if (slots.some((key) => occupiedSlots.has(key))) return false;
             }
+            if (action === 'delivery_detention') {
+                const endVal = otherBillingEndTime ? otherBillingEndTime.value : '';
+                if (!endVal) return false;
+                const end = new Date(endVal);
+                if (end <= time || end > shiftEnd) return false;
+                const detentionMinutes = Math.round((end - time) / (60 * 1000));
+                if (detentionMinutes < 30) return false;
+            }
             if (action === 'admission') {
                 if (!admissionMom || !admissionMom.value) return false;
             }
@@ -1190,12 +1222,30 @@
                 inWindow = time >= shiftStart && time <= shiftEnd;
             }
             if (otherBillingWarning) {
-                const blocked = timeVal && (!inWindow || occupiedSlots.has(timeVal));
+                const action = otherBillingAction ? otherBillingAction.value : '';
+                const blockedBySlot = action !== 'delivery_detention' && timeVal && occupiedSlots.has(timeVal);
+                const blockedByWindow = timeVal && !inWindow;
+                let detentionMessage = '';
+                if (action === 'delivery_detention' && timeVal && otherBillingEndTime && otherBillingEndTime.value) {
+                    const start = new Date(timeVal);
+                    const end = new Date(otherBillingEndTime.value);
+                    const detentionMinutes = Math.round((end - start) / (60 * 1000));
+                    if (end <= start) {
+                        detentionMessage = 'Finish time must be after start time.';
+                    } else if (detentionMinutes < 30) {
+                        detentionMessage = 'Delivery detention must be at least 30 minutes.';
+                    }
+                }
+                const blocked = blockedByWindow || blockedBySlot || !!detentionMessage;
                 otherBillingWarning.style.display = blocked ? 'block' : 'none';
                 if (blocked) {
-                    otherBillingWarning.textContent = occupiedSlots.has(timeVal)
-                        ? 'Time overlaps an existing shift grid entry.'
-                        : 'Time must be within the current on-call window.';
+                    if (detentionMessage) {
+                        otherBillingWarning.textContent = detentionMessage;
+                    } else if (blockedBySlot) {
+                        otherBillingWarning.textContent = 'Time overlaps an existing shift grid entry.';
+                    } else {
+                        otherBillingWarning.textContent = 'Time must be within the current on-call window.';
+                    }
                 } else {
                     otherBillingWarning.textContent = 'Time must be within the current on-call window.';
                 }
@@ -1279,7 +1329,8 @@
                 if (otherBillingTime) otherBillingTime.value = start;
                 if (otherBillingEndTime) otherBillingEndTime.value = end;
                 const removed = [];
-                if (start) {
+                const action = row.getAttribute('data-other-action') || '';
+                if (start && action !== 'delivery_detention') {
                     const startDt = new Date(start);
                     const endDt = end ? new Date(end) : new Date(startDt.getTime() + 15 * 60 * 1000);
                     let cursor = new Date(startDt);

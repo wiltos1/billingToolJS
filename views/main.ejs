@@ -131,20 +131,15 @@
     <h3>Archived Patients</h3>
     <% if (archived_patients.length) { %>
     <table>
-        <tr><th>Initials</th><th>ID Number</th><th>Download</th><th>Re-activate</th></tr>
+        <tr><th>Initials</th><th>ID Number</th><th>Details</th></tr>
         <% archived_patients.forEach((p) => { %>
         <tr>
             <td><%= p.initials %></td>
             <td><%= p.identifier %></td>
             <td>
-                <form action="/patients/<%= p.id %>/confirmed_pdf" method="get" style="margin:0;">
-                    <button type="submit">Download</button>
-                </form>
-            </td>
-            <td>
-                <form action="/patients/<%= p.id %>/restore" method="post" style="margin:0;">
-                    <button type="submit">Re-activate Patient</button>
-                </form>
+                <a href="/?view=archived&selected_patient=<%= p.id %>">
+                    <button type="button">View Details</button>
+                </a>
             </td>
         </tr>
         <% }) %>
@@ -155,7 +150,8 @@
 </div>
 <% } %>
 
-<% if (selected_patient && current_view !== 'archived') { %>
+<% const details_read_only = !selected_patient || current_view === 'archived' || selected_patient.status === 'discharged'; %>
+<% if (selected_patient) { %>
 <div class="card">
     <div class="card-header">
         <div>
@@ -175,16 +171,20 @@
             <p class="muted">Discharged <%= selected_patient.discharge_display %></p>
             <% } %>
         </div>
+        <% if (!details_read_only) { %>
         <form action="/patients/<%= selected_patient.id %>/delete" method="post" onsubmit="return confirm('Delete this patient?');">
             <input type="hidden" name="view" value="<%= current_view %>">
             <button type="submit" class="delete-btn">Delete Patient</button>
         </form>
+        <% } %>
     </div>
     <hr class="section-divider">
     <div class="card-actions">
         <h3 class="section-header">Status Timeline</h3>
+        <% if (!details_read_only) { %>
         <div class="save-indicator" id="timeline-save-indicator">Saved: --</div>
         <div class="warning-banner" id="timeline-warning"></div>
+        <% } %>
         <form id="status-timeline-form" action="/patients/<%= selected_patient.id %>/timeline" method="post">
             <table>
                 <tr><th>Status</th><th>Date</th><th>Time</th><th>Extras</th></tr>
@@ -192,7 +192,7 @@
                 <tr>
                     <td><%= row.label %></td>
                     <td>
-                        <% if (row.editable && row.raw_status !== 'Delivered') { %>
+                        <% if (!details_read_only && row.editable && row.raw_status !== 'Delivered') { %>
                             <% if (row.event_id) { %>
                                 <input type="date" value="<%= row.date_value %>" data-event-id="<%= row.event_id %>">
                             <% } else { %>
@@ -203,7 +203,7 @@
                         <% } %>
                     </td>
                     <td>
-                        <% if (row.editable && row.raw_status !== 'Delivered') { %>
+                        <% if (!details_read_only && row.editable && row.raw_status !== 'Delivered') { %>
                             <% if (row.event_id) { %>
                                 <input type="time" value="<%= row.time_value %>" step="60" data-event-id="<%= row.event_id %>">
                             <% } else { %>
@@ -214,7 +214,7 @@
                         <% } %>
                     </td>
                     <td>
-                        <% if (row.raw_status === 'Induction' && row.event_id) { %>
+                        <% if (!details_read_only && row.raw_status === 'Induction' && row.event_id) { %>
                             <label style="display:flex; align-items:center; gap:6px;">
                                 <input type="checkbox" class="induction-nst-toggle" data-event-id="<%= row.event_id %>" value="1" <%= row.induction_nst ? 'checked' : '' %>>
                                 NST
@@ -227,9 +227,11 @@
                 <% }) %>
             </table>
         </form>
+        <% if (!details_read_only) { %>
         <div class="timeline-actions">
             <button type="button" id="add-action-btn">+ Add Action</button>
         </div>
+        <% } %>
     </div>
 
 <hr class="section-divider">
@@ -354,14 +356,11 @@
 <hr class="section-divider">
 <p class="muted">Archived patients cannot be modified.</p>
 
-<form action="/patients/<%= selected_patient.id %>/restore" method="post">
-    <button>Restore to Active</button>
-</form>
-
 <% } %>
 </div>
 <% } %>
 
+<% if (selected_patient && !details_read_only) { %>
 <div id="add-action-modal" class="modal-backdrop" aria-hidden="true">
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="add-action-title">
         <h3 id="add-action-title" style="margin:0 0 8px 0;">Add Action</h3>
@@ -400,6 +399,7 @@
         </form>
     </div>
 </div>
+<% } %>
 <script>
     const modal = document.getElementById('add-action-modal');
     const openBtn = document.getElementById('add-action-btn');

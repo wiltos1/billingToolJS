@@ -1,4 +1,5 @@
 const express = require('express');
+const PDFDocument = require('pdfkit');
 const { dbGet, dbAll, dbRun } = require('../db');
 const {
   requireLogin,
@@ -112,6 +113,11 @@ const getSelectedPatient = (req) => {
 
 const TIME_MODIFIERS = new Set(['COINPT', 'EV', 'WK', 'NTPM', 'NTAM']);
 const AA_MODIFIERS = ['TEV', 'TWK', 'TNTP', 'TNTA', 'TST', 'TDES'];
+const TRIAGE_BASE_CODES = new Set(['03.03BZ', '03.05F', '03.05FA', '03.05FB']);
+const TRIAGE_ASSOC_CODES = new Set(['03.03KA', '03.03LA', '03.03MC', '03.03MD', '87.54A', '13.99BE']);
+const INDUCTION_CODES = new Set(['85.5A', '87.54A']);
+const DELIVERY_BASE_CODES = new Set(['87.98A', '87.98B', '87.98C']);
+const DELIVERY_ASSOC_CODES = new Set(['87.99A', '84.21', '87.89B', '85.69B', '87.6']);
 
 const parseModifierParts = (modifier) => {
   if (!modifier) return [];
@@ -134,7 +140,97 @@ const extractCountsFromModifier = (modifier) => {
   return counts;
 };
 
-const summarizeBillingsForGrid = (entries, patientLookup) => {
+const sameMinute = (a, b) => {
+  if (!a || !b) return false;
+  return formatLocalDateTime(a) === formatLocalDateTime(b);
+};
+
+const nearestTime = (target, candidates) => {
+  if (!target || !candidates || !candidates.length) return null;
+  let best = candidates[0];
+  let bestDelta = Math.abs(target - best);
+  for (let i = 1; i < candidates.length; i += 1) {
+    const delta = Math.abs(target - candidates[i]);
+    if (delta < bestDelta) {
+      best = candidates[i];
+      bestDelta = delta;
+    }
+  }
+  return best;
+};
+
+const diagnosticLookupKey = (doctorId, patientKey, dateOfService, billingCode, encounterNumber) => {
+  return `${doctorId}|${patientKey}|${dateOfService}|${billingCode}|${encounterNumber}`;
+};
+
+const callOverrideLookupKey = (doctorId, patientKey, dateOfService, billingCode, encounterNumber) => {
+  return `${doctorId}|${patientKey}|${dateOfService}|${billingCode}|${encounterNumber}`;
+};
+
+const loadDiagnosticCodeMap = (doctorId) => {
+  const map = new Map();
+  if (!doctorId) return map;
+  const rows = dbAll(
+    `SELECT * FROM diagnostic_codes WHERE doctor_id = ?`,
+    [doctorId]
+  );
+  rows.forEach((row) => {
+    const key = diagnosticLookupKey(
+      row.doctor_id,
+      row.patient_key,
+      row.date_of_service,
+      row.billing_code,
+      row.encounter_number
+    );
+    map.set(key, row.diagnostic_code);
+  });
+  return map;
+};
+
+const loadCallOverrideMap = (doctorId) => {
+  const map = new Map();
+  if (!doctorId) return map;
+  const rows = dbAll(
+    `SELECT * FROM billing_call_overrides WHERE doctor_id = ?`,
+    [doctorId]
+  );
+  rows.forEach((row) => {
+    const key = callOverrideLookupKey(
+      row.doctor_id,
+      row.patient_key,
+      row.date_of_service,
+      row.billing_code,
+      row.encounter_number
+    );
+    map.set(key, row.number_of_calls);
+  });
+  return map;
+};
+
+const calculateSurgicalAssistCalls = (entry) => {
+  const start = entry && entry.time ? entry.time : null;
+  const end = entry && entry.end_time ? toDate(entry.end_time) : null;
+  if (!start || !end || end <= start) return 1;
+  const minutes = Math.round((end - start) / (60 * 1000));
+  if (minutes < 60) return 1;
+  return 1 + Math.floor((minutes - 60) / 15) + 1;
+};
+
+const calculateDeliveryDetentionCalls = (entry) => {
+  const start = entry && entry.time ? entry.time : null;
+  const end = entry && entry.end_time ? toDate(entry.end_time) : null;
+  if (!start || !end || end <= start) return 0;
+  const minutes = Math.round((end - start) / (60 * 1000));
+  if (minutes < 30) return 0;
+  return Math.floor((minutes - 30) / 15) + 1;
+};
+
+const summarizeBillingsForGrid = (
+  entries,
+  patientLookup,
+  diagnosticCodeMap = new Map(),
+  callOverrideMap = new Map()
+) => {
   const byDoctor = new Map();
   entries.forEach((entry) => {
     const doctorId = entry.doctor ? entry.doctor.id : 'unknown';
@@ -168,55 +264,148 @@ const summarizeBillingsForGrid = (entries, patientLookup) => {
 
     entriesByPatient.forEach((patientEntries, patientId) => {
       const patient = patientLookup.get(patientId);
+      const patientKey = patientId === null || patientId === undefined ? 'na' : String(patientId);
       const patientIdentifier = patientId === null || patientId === undefined
         ? 'N/A'
         : (patient ? patient.identifier : `Patient ${patientId}`);
       const sortedEntries = patientEntries.slice().sort((a, b) => a.time - b.time);
-      const groups = [];
-      const activeByCode = new Map();
-      let jaGroup = null;
-
+      const byDay = new Map();
       sortedEntries.forEach((entry) => {
-        const code = entry.code;
-        if (code === '13.99JA') {
-          if (!jaGroup) {
-            jaGroup = {
-              code,
-              entries: [],
-              startTime: entry.time,
-              lastTime: entry.time,
-            };
-            groups.push(jaGroup);
-          }
-          jaGroup.entries.push(entry);
-          if (entry.time < jaGroup.startTime) jaGroup.startTime = entry.time;
-          if (entry.time > jaGroup.lastTime) jaGroup.lastTime = entry.time;
-          return;
-        }
-        const existing = activeByCode.get(code);
-        const contiguous = existing
-          && entry.time - existing.lastTime === 15 * 60 * 1000;
-        if (existing && contiguous) {
-          existing.entries.push(entry);
-          existing.lastTime = entry.time;
-          return;
-        }
-        const groupEntry = {
-          code,
-          entries: [entry],
-          startTime: entry.time,
-          lastTime: entry.time,
-        };
-        groups.push(groupEntry);
-        activeByCode.set(code, groupEntry);
+        const key = formatDate(entry.time);
+        if (!byDay.has(key)) byDay.set(key, []);
+        byDay.get(key).push(entry);
       });
 
-      groups
-        .slice()
-        .sort((a, b) => a.startTime - b.startTime)
-        .forEach((groupEntry, idx) => {
-          const encounterNumber = idx + 1;
-          let numberOfCalls = groupEntry.entries.length;
+      const dayKeys = Array.from(byDay.keys()).sort();
+      dayKeys.forEach((dayKey) => {
+        const dayEntries = byDay.get(dayKey).slice().sort((a, b) => a.time - b.time);
+        const groups = [];
+        const activeByCode = new Map();
+        const jaEntries = [];
+
+        dayEntries.forEach((entry) => {
+          const code = entry.code;
+          if (code === '13.99JA') {
+            jaEntries.push(entry);
+            return;
+          }
+          if (entry._group_key) {
+            groups.push({
+              code,
+              entries: [entry],
+              startTime: entry.time,
+              lastTime: entry.time,
+              _encounter_key: `other|${entry._group_key}`,
+            });
+            return;
+          }
+          const existing = activeByCode.get(code);
+          const contiguous = existing
+            && entry.time - existing.lastTime === 15 * 60 * 1000;
+          if (existing && contiguous) {
+            existing.entries.push(entry);
+            existing.lastTime = entry.time;
+            return;
+          }
+          const groupEntry = {
+            code,
+            entries: [entry],
+            startTime: entry.time,
+            lastTime: entry.time,
+          };
+          groups.push(groupEntry);
+          activeByCode.set(code, groupEntry);
+        });
+
+        if (jaEntries.length) {
+          const sortedJa = jaEntries.slice().sort((a, b) => a.time - b.time);
+          const attendedJa = sortedJa.filter((entry) => (entry.modifier || '').trim() !== '');
+          const ghostJaCount = sortedJa.length - attendedJa.length;
+          if (attendedJa.length) {
+            attendedJa.forEach((entry, idx) => {
+              groups.push({
+                code: '13.99JA',
+                entries: [entry],
+                startTime: entry.time,
+                lastTime: entry.time,
+                _encounter_key: `ja|${formatLocalDateTime(entry.time)}|${idx}`,
+                _calls: idx === 0 ? (1 + ghostJaCount) : 1,
+              });
+            });
+          } else {
+            groups.push({
+              code: '13.99JA',
+              entries: sortedJa,
+              startTime: sortedJa[0].time,
+              lastTime: sortedJa[sortedJa.length - 1].time,
+              _encounter_key: `ja|${dayKey}|fallback`,
+              _calls: sortedJa.length || 1,
+            });
+          }
+        }
+
+        const sortedGroups = groups.slice().sort((a, b) => a.startTime - b.startTime);
+        const triageAnchors = sortedGroups
+          .filter((g) => TRIAGE_BASE_CODES.has(g.code))
+          .map((g) => g.startTime);
+        const inductionAnchors = sortedGroups
+          .filter((g) => g.code === '85.5A')
+          .map((g) => g.startTime);
+        const deliveryAnchors = sortedGroups
+          .filter((g) => DELIVERY_BASE_CODES.has(g.code))
+          .map((g) => g.startTime);
+
+        const encounterKeyByGroup = new Map();
+        sortedGroups.forEach((groupEntry) => {
+          const code = groupEntry.code;
+          const timeKey = formatLocalDateTime(groupEntry.startTime);
+          let encounterKey = `default|${code}|${timeKey}`;
+
+          if (code === '13.99JA') {
+            encounterKey = groupEntry._encounter_key || `ja|${dayKey}|${timeKey}`;
+          } else if (DELIVERY_BASE_CODES.has(code)) {
+            encounterKey = `delivery|${timeKey}`;
+          } else if (DELIVERY_ASSOC_CODES.has(code)) {
+            const sameTimeDelivery = deliveryAnchors.find((t) => sameMinute(t, groupEntry.startTime));
+            const deliveryAnchor = sameTimeDelivery || nearestTime(groupEntry.startTime, deliveryAnchors);
+            encounterKey = deliveryAnchor
+              ? `delivery|${formatLocalDateTime(deliveryAnchor)}`
+              : `delivery|${timeKey}`;
+          } else if (code === '85.5A') {
+            encounterKey = `induction|${timeKey}`;
+          } else if (code === '87.54A' && inductionAnchors.some((t) => sameMinute(t, groupEntry.startTime))) {
+            const anchor = inductionAnchors.find((t) => sameMinute(t, groupEntry.startTime));
+            encounterKey = `induction|${formatLocalDateTime(anchor)}`;
+          } else if (TRIAGE_BASE_CODES.has(code)) {
+            encounterKey = `triage|${timeKey}`;
+          } else if (TRIAGE_ASSOC_CODES.has(code)) {
+            const sameTimeTriage = triageAnchors.find((t) => sameMinute(t, groupEntry.startTime));
+            const triageAnchor = sameTimeTriage || nearestTime(groupEntry.startTime, triageAnchors);
+            encounterKey = triageAnchor
+              ? `triage|${formatLocalDateTime(triageAnchor)}`
+              : `triage|${timeKey}`;
+          }
+
+          encounterKeyByGroup.set(groupEntry, encounterKey);
+        });
+
+        const encounterOrder = [];
+        const seenEncounter = new Set();
+        sortedGroups.forEach((groupEntry) => {
+          const key = encounterKeyByGroup.get(groupEntry);
+          if (!seenEncounter.has(key)) {
+            seenEncounter.add(key);
+            encounterOrder.push(key);
+          }
+        });
+        const encounterNumberByKey = new Map();
+        encounterOrder.forEach((key, idx) => encounterNumberByKey.set(key, idx + 1));
+
+        sortedGroups.forEach((groupEntry) => {
+          const encounterNumber = encounterNumberByKey.get(encounterKeyByGroup.get(groupEntry));
+          let numberOfCalls = groupEntry.code === '13.99JA'
+            ? (groupEntry._calls || 1)
+            : 1;
           const modifierParts = groupEntry.entries.flatMap((e) => parseModifierParts(e.modifier));
           const modifierSet = new Set(modifierParts.map((part) => part.toUpperCase()));
           let timeModifier = '';
@@ -254,6 +443,12 @@ const summarizeBillingsForGrid = (entries, patientLookup) => {
               numberOfCalls = countTotal;
             }
           }
+          if (groupEntry.code === '86.9D SA') {
+            numberOfCalls = Math.max(1, calculateSurgicalAssistCalls(firstEntry));
+          }
+          if (groupEntry.code === '87.98E') {
+            numberOfCalls = Math.max(1, calculateDeliveryDetentionCalls(firstEntry));
+          }
 
           if (groupEntry.code === '03.01AA') {
             timeModifier = '';
@@ -263,10 +458,35 @@ const summarizeBillingsForGrid = (entries, patientLookup) => {
             timeModifier = 'COINPT';
           }
 
+          const dateOfService = formatDate(groupEntry.startTime);
+          const diagKey = diagnosticLookupKey(
+            group.doctor && group.doctor.id ? group.doctor.id : 'unknown',
+            patientKey,
+            dateOfService,
+            groupEntry.code,
+            encounterNumber
+          );
+          const diagnosticCode = diagnosticCodeMap.get(diagKey) || '';
+          const callKey = callOverrideLookupKey(
+            group.doctor && group.doctor.id ? group.doctor.id : 'unknown',
+            patientKey,
+            dateOfService,
+            groupEntry.code,
+            encounterNumber
+          );
+          if (groupEntry.code === '87.89B') {
+            const overrideCalls = parseInt(callOverrideMap.get(callKey), 10);
+            if (!Number.isNaN(overrideCalls) && overrideCalls > 0) {
+              numberOfCalls = overrideCalls;
+            }
+          }
           rows.push({
+            doctor_id: group.doctor && group.doctor.id ? group.doctor.id : '',
+            patient_id: patientId === null || patientId === undefined ? '' : patientId,
+            patient_key: patientKey,
             patient_identifier: patientIdentifier,
-            date_of_service: formatDate(groupEntry.startTime),
-            diagnostic_code: '',
+            date_of_service: dateOfService,
+            diagnostic_code: diagnosticCode,
             billing_code: groupEntry.code,
             number_of_calls: numberOfCalls,
             encounter_number: encounterNumber,
@@ -276,6 +496,7 @@ const summarizeBillingsForGrid = (entries, patientLookup) => {
             aa_counts: aaCounts,
           });
         });
+      });
     });
 
     tables.push({
@@ -306,6 +527,9 @@ const otherBillingsForPatient = (patientId) => {
     modifier: row.modifier || '',
     doctor: row.doctor_id ? { id: row.doctor_id, name: row.doctor_name } : null,
     cmgp_modifier: row.cmgp_modifier || '',
+    action: row.action || '',
+    end_time: row.end_time || null,
+    _group_key: row.id ? `other-${row.id}` : '',
   }));
 };
 
@@ -326,7 +550,75 @@ const otherBillingsForDoctorWindow = (doctorId, window) => {
     doctor: row.doctor_id ? { id: row.doctor_id, name: row.doctor_name } : null,
     cmgp_modifier: row.cmgp_modifier || '',
     patientId: row.patient_id || null,
+    action: row.action || '',
+    end_time: row.end_time || null,
+    _group_key: row.id ? `other-${row.id}` : '',
   }));
+};
+
+const buildDoctorOptimizationTables = (doctorId, cutoffStr, diagnosticCodeMap = new Map(), callOverrideMap = new Map(), windowId = null) => {
+  const allEntries = [];
+  let doctorWindows = [];
+  if (windowId !== null && windowId !== undefined) {
+    doctorWindows = dbAll(
+      `SELECT start_datetime, end_datetime, doctor_id FROM shift_windows
+       WHERE id = ? AND doctor_id = ?`,
+      [windowId, doctorId]
+    );
+  } else {
+    doctorWindows = dbAll(
+      `SELECT start_datetime, end_datetime, doctor_id FROM shift_windows
+       WHERE doctor_id = ? AND end_datetime >= ?`,
+      [doctorId, cutoffStr]
+    );
+  }
+
+  const attendedIds = new Set();
+  doctorWindows.forEach((window) => {
+    if (!window.start_datetime || !window.end_datetime) return;
+    const rows = dbAll(
+      `SELECT DISTINCT patient_id FROM shift_slots
+       WHERE doctor_id = ? AND start_time >= ? AND start_time < ?
+         AND patient_id IS NOT NULL`,
+      [doctorId, window.start_datetime, window.end_datetime]
+    );
+    rows.forEach((row) => {
+      if (row && row.patient_id) attendedIds.add(row.patient_id);
+    });
+    const otherRecs = otherBillingsForDoctorWindow(doctorId, window);
+    otherRecs.forEach((rec) => allEntries.push(rec));
+  });
+
+  const patientIds = Array.from(attendedIds);
+  const patients = patientIds.length
+    ? dbAll(`SELECT * FROM patients WHERE id IN (${patientIds.map(() => '?').join(',')})`, patientIds)
+    : [];
+  const patientLookup = new Map(patients.map((patient) => [patient.id, patient]));
+
+  patients.forEach((patient) => {
+    if (patient.patient_type === 'baby') {
+      const babyBillings = buildBabyBillings(patient);
+      babyBillings.forEach((rec) => allEntries.push({ ...rec, patientId: patient.id }));
+      return;
+    }
+    const admitted = toDate(patient.care_admitted_at);
+    const delivered = toDate(patient.care_delivered_at);
+    if (!admitted || !delivered || admitted >= delivered) return;
+    const startPoint = toDate(patient.start_datetime) || admitted;
+    const triageWindowEnd = getTriageWindowEnd(patient, delivered);
+    const patientSlots = dbAll(
+      `SELECT * FROM shift_slots
+       WHERE patient_id = ? AND start_time >= ? AND start_time <= ?
+       ORDER BY start_time`,
+      [patient.id, formatLocalDateTime(startPoint), formatLocalDateTime(triageWindowEnd)]
+    );
+    const activeShiftWindows = getShiftWindowsForRange(admitted, delivered);
+    const recs = buildOptimizedBillings(patient, patientSlots, activeShiftWindows);
+    recs.forEach((rec) => allEntries.push({ ...rec, patientId: patient.id }));
+  });
+
+  return summarizeBillingsForGrid(allEntries, patientLookup, diagnosticCodeMap, callOverrideMap)
+    .filter((table) => table.doctor && table.doctor.id === doctorId);
 };
 
 router.get('/optimization', requireLogin, (req, res) => {
@@ -348,6 +640,7 @@ router.get('/optimization', requireLogin, (req, res) => {
   let summaryTables = [];
   let optimizationError = req.query.opt_error || '';
   const optimizationNotes = [];
+  let doctorBillingsLocked = false;
 
   if (selectedPatient) {
     babyPatient = dbGet(
@@ -736,7 +1029,7 @@ router.get('/optimization', requireLogin, (req, res) => {
     const cutoff = new Date(Date.now() - 4 * 24 * 60 * 60 * 1000);
     const cutoffStr = formatLocalDateTime(cutoff);
     recentDoctors = dbAll(
-      `SELECT DISTINCT d.id, d.name
+      `SELECT DISTINCT d.id, d.name, d.is_on_shift
        FROM shift_windows w
        LEFT JOIN doctors d ON w.doctor_id = d.id
        WHERE w.end_datetime >= ? AND w.doctor_id IS NOT NULL
@@ -755,57 +1048,10 @@ router.get('/optimization', requireLogin, (req, res) => {
     }
     if (selectedDoctor) {
       req.session[sessionKey] = selectedDoctor.id;
-      const allEntries = [];
-      const doctorWindows = dbAll(
-        `SELECT start_datetime, end_datetime FROM shift_windows
-         WHERE doctor_id = ? AND end_datetime >= ?`,
-        [selectedDoctor.id, cutoffStr]
-      );
-      const attendedIds = new Set();
-      doctorWindows.forEach((window) => {
-        if (!window.start_datetime || !window.end_datetime) return;
-        const rows = dbAll(
-          `SELECT DISTINCT patient_id FROM shift_slots
-           WHERE doctor_id = ? AND start_time >= ? AND start_time < ?
-             AND patient_id IS NOT NULL`,
-          [selectedDoctor.id, window.start_datetime, window.end_datetime]
-        );
-        rows.forEach((row) => {
-          if (row && row.patient_id) attendedIds.add(row.patient_id);
-        });
-        const otherRecs = otherBillingsForDoctorWindow(selectedDoctor.id, window);
-        otherRecs.forEach((rec) => allEntries.push(rec));
-      });
-      const patientIds = Array.from(attendedIds);
-      const patients = patientIds.length
-        ? dbAll(`SELECT * FROM patients WHERE id IN (${patientIds.map(() => '?').join(',')})`, patientIds)
-        : [];
-      const patientLookup = new Map(patients.map((patient) => [patient.id, patient]));
-
-      patients.forEach((patient) => {
-        if (patient.patient_type === 'baby') {
-          const babyBillings = buildBabyBillings(patient);
-          babyBillings.forEach((rec) => allEntries.push({ ...rec, patientId: patient.id }));
-          return;
-        }
-        const admitted = toDate(patient.care_admitted_at);
-        const delivered = toDate(patient.care_delivered_at);
-        if (!admitted || !delivered || admitted >= delivered) return;
-        const startPoint = toDate(patient.start_datetime) || admitted;
-        const triageWindowEnd = getTriageWindowEnd(patient, delivered);
-        const patientSlots = dbAll(
-          `SELECT * FROM shift_slots
-           WHERE patient_id = ? AND start_time >= ? AND start_time <= ?
-           ORDER BY start_time`,
-          [patient.id, formatLocalDateTime(startPoint), formatLocalDateTime(triageWindowEnd)]
-        );
-        const activeShiftWindows = getShiftWindowsForRange(admitted, delivered);
-        const recs = buildOptimizedBillings(patient, patientSlots, activeShiftWindows);
-        recs.forEach((rec) => allEntries.push({ ...rec, patientId: patient.id }));
-      });
-
-      summaryTables = summarizeBillingsForGrid(allEntries, patientLookup)
-        .filter((table) => table.doctor && table.doctor.id === selectedDoctor.id);
+      const diagnosticCodeMap = loadDiagnosticCodeMap(selectedDoctor.id);
+      const callOverrideMap = loadCallOverrideMap(selectedDoctor.id);
+      summaryTables = buildDoctorOptimizationTables(selectedDoctor.id, cutoffStr, diagnosticCodeMap, callOverrideMap);
+      doctorBillingsLocked = Number(selectedDoctor.is_on_shift) !== 1;
     }
   }
 
@@ -820,10 +1066,319 @@ router.get('/optimization', requireLogin, (req, res) => {
     view_mode: viewMode,
     recent_doctors: recentDoctors,
     selected_doctor: selectedDoctor,
+    doctor_billings_locked: doctorBillingsLocked,
     optimization_error: optimizationError,
     optimization_notes: optimizationNotes,
     format_display: formatDisplay,
   });
+});
+
+router.post('/optimization/diagnostic_code', requireLogin, (req, res) => {
+  const doctorId = parseInt(req.body.doctor_id, 10);
+  const patientIdRaw = (req.body.patient_id || '').trim();
+  const patientKey = (req.body.patient_key || '').trim() || 'na';
+  const dateOfService = (req.body.date_of_service || '').trim();
+  const billingCode = (req.body.billing_code || '').trim();
+  const encounterNumber = parseInt(req.body.encounter_number, 10);
+  const codeRaw = (req.body.diagnostic_code || '').trim();
+
+  if (Number.isNaN(doctorId) || Number.isNaN(encounterNumber) || !dateOfService || !billingCode) {
+    return res.redirect('/optimization?view_mode=doctor');
+  }
+  const doctor = dbGet('SELECT id, is_on_shift FROM doctors WHERE id = ?', [doctorId]);
+  if (!doctor || Number(doctor.is_on_shift) !== 1) {
+    return res.redirect(`/optimization?view_mode=doctor&selected_doctor=${doctorId}`);
+  }
+
+  if (!/^\d{3}$/.test(codeRaw)) {
+    return res.redirect(`/optimization?view_mode=doctor&selected_doctor=${doctorId}`);
+  }
+  const codeNum = parseInt(codeRaw, 10);
+  if (codeNum < 1 || codeNum > 999) {
+    return res.redirect(`/optimization?view_mode=doctor&selected_doctor=${doctorId}`);
+  }
+  const normalizedCode = String(codeNum).padStart(3, '0');
+  const patientId = patientIdRaw ? parseInt(patientIdRaw, 10) : null;
+
+  const existing = dbGet(
+    `SELECT id FROM diagnostic_codes
+     WHERE doctor_id = ? AND patient_key = ? AND date_of_service = ? AND billing_code = ? AND encounter_number = ?`,
+    [doctorId, patientKey, dateOfService, billingCode, encounterNumber]
+  );
+  if (existing && existing.id) {
+    dbRun(
+      `UPDATE diagnostic_codes
+       SET patient_id = ?, diagnostic_code = ?, updated_at = ?
+       WHERE id = ?`,
+      [
+        Number.isNaN(patientId) ? null : patientId,
+        normalizedCode,
+        formatLocalDateTime(new Date()),
+        existing.id,
+      ]
+    );
+  } else {
+    dbRun(
+      `INSERT INTO diagnostic_codes
+       (doctor_id, patient_id, patient_key, date_of_service, billing_code, encounter_number, diagnostic_code, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        doctorId,
+        Number.isNaN(patientId) ? null : patientId,
+        patientKey,
+        dateOfService,
+        billingCode,
+        encounterNumber,
+        normalizedCode,
+        formatLocalDateTime(new Date()),
+      ]
+    );
+  }
+
+  return res.redirect(`/optimization?view_mode=doctor&selected_doctor=${doctorId}`);
+});
+
+router.post('/optimization/number_of_calls', requireLogin, (req, res) => {
+  const doctorId = parseInt(req.body.doctor_id, 10);
+  const patientIdRaw = (req.body.patient_id || '').trim();
+  const patientKey = (req.body.patient_key || '').trim() || 'na';
+  const dateOfService = (req.body.date_of_service || '').trim();
+  const billingCode = (req.body.billing_code || '').trim();
+  const encounterNumber = parseInt(req.body.encounter_number, 10);
+  const callsRaw = (req.body.number_of_calls || '').trim();
+
+  if (billingCode !== '87.89B') {
+    return res.redirect('/optimization?view_mode=doctor');
+  }
+  if (Number.isNaN(doctorId) || Number.isNaN(encounterNumber) || !dateOfService || !billingCode) {
+    return res.redirect('/optimization?view_mode=doctor');
+  }
+  const doctor = dbGet('SELECT id, is_on_shift FROM doctors WHERE id = ?', [doctorId]);
+  if (!doctor || Number(doctor.is_on_shift) !== 1) {
+    return res.redirect(`/optimization?view_mode=doctor&selected_doctor=${doctorId}`);
+  }
+  if (!/^\d+$/.test(callsRaw)) {
+    return res.redirect(`/optimization?view_mode=doctor&selected_doctor=${doctorId}`);
+  }
+  const calls = parseInt(callsRaw, 10);
+  if (Number.isNaN(calls) || calls < 1 || calls > 99) {
+    return res.redirect(`/optimization?view_mode=doctor&selected_doctor=${doctorId}`);
+  }
+  const patientId = patientIdRaw ? parseInt(patientIdRaw, 10) : null;
+
+  const existing = dbGet(
+    `SELECT id FROM billing_call_overrides
+     WHERE doctor_id = ? AND patient_key = ? AND date_of_service = ? AND billing_code = ? AND encounter_number = ?`,
+    [doctorId, patientKey, dateOfService, billingCode, encounterNumber]
+  );
+  if (existing && existing.id) {
+    dbRun(
+      `UPDATE billing_call_overrides
+       SET patient_id = ?, number_of_calls = ?, updated_at = ?
+       WHERE id = ?`,
+      [
+        Number.isNaN(patientId) ? null : patientId,
+        calls,
+        formatLocalDateTime(new Date()),
+        existing.id,
+      ]
+    );
+  } else {
+    dbRun(
+      `INSERT INTO billing_call_overrides
+       (doctor_id, patient_id, patient_key, date_of_service, billing_code, encounter_number, number_of_calls, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        doctorId,
+        Number.isNaN(patientId) ? null : patientId,
+        patientKey,
+        dateOfService,
+        billingCode,
+        encounterNumber,
+        calls,
+        formatLocalDateTime(new Date()),
+      ]
+    );
+  }
+
+  return res.redirect(`/optimization?view_mode=doctor&selected_doctor=${doctorId}`);
+});
+
+router.get('/optimization/doctor/:doctorId/optimized_pdf', requireLogin, (req, res) => {
+  const doctorId = parseInt(req.params.doctorId, 10);
+  if (Number.isNaN(doctorId)) {
+    return res.redirect('/doctors/manage');
+  }
+  const doctor = dbGet('SELECT * FROM doctors WHERE id = ?', [doctorId]);
+  if (!doctor) {
+    return res.redirect('/doctors/manage');
+  }
+
+  const cutoff = new Date(Date.now() - 4 * 24 * 60 * 60 * 1000);
+  const cutoffStr = formatLocalDateTime(cutoff);
+  const windowId = req.query.window_id ? parseInt(req.query.window_id, 10) : null;
+  const resolvedWindowId = Number.isNaN(windowId) ? null : windowId;
+  const diagnosticCodeMap = loadDiagnosticCodeMap(doctor.id);
+  const callOverrideMap = loadCallOverrideMap(doctor.id);
+  const summaryTables = buildDoctorOptimizationTables(
+    doctor.id,
+    cutoffStr,
+    diagnosticCodeMap,
+    callOverrideMap,
+    resolvedWindowId
+  );
+
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename=doctor_${doctor.id}_optimized_billing.pdf`);
+
+  const doc = new PDFDocument({ margin: 28, size: 'A4', layout: 'landscape' });
+  doc.pipe(res);
+
+  const margin = 28;
+  const pageWidth = doc.page.width;
+  const pageHeight = doc.page.height;
+  const usableBottom = pageHeight - margin;
+  const rowHeight = 18;
+  const headerHeight = 20;
+  const columns = [
+    { key: 'patient_identifier', label: 'Pt Identifier', width: 160 },
+    { key: 'date_of_service', label: 'Date', width: 78 },
+    { key: 'diagnostic_code', label: 'Dx', width: 36 },
+    { key: 'billing_code', label: 'Code', width: 60 },
+    { key: 'number_of_calls', label: '# Calls', width: 36 },
+    { key: 'encounter_number', label: 'Enc#', width: 36 },
+    { key: 'modifier', label: 'Modifier', width: 84 },
+    { key: 'cmgp_modifier', label: 'CMGP', width: 40 },
+    { key: 'bmi_modifier', label: 'BMI', width: 42 },
+    { key: 'TEV', label: 'TEV', width: 32 },
+    { key: 'TWK', label: 'TWK', width: 32 },
+    { key: 'TNTP', label: 'TNTP', width: 38 },
+    { key: 'TNTA', label: 'TNTA', width: 38 },
+    { key: 'TST', label: 'TST', width: 32 },
+    { key: 'TDES', label: 'TDES', width: 36 },
+  ];
+  const tableWidth = columns.reduce((sum, col) => sum + col.width, 0);
+  const tableX = margin;
+  let cursorY = margin;
+  const generatedAt = formatDisplay(new Date());
+
+  const drawPageTop = (subtitle) => {
+    cursorY = margin;
+    doc.font('Helvetica-Bold').fontSize(14).fillColor('#111827').text('Doctor Optimized Billing Summary', tableX, cursorY);
+    cursorY += 18;
+    doc.font('Helvetica').fontSize(10).fillColor('#111827').text(`Doctor: Dr. ${doctor.name}`, tableX, cursorY);
+    cursorY += 14;
+    doc.text(`Generated: ${generatedAt}`, tableX, cursorY);
+    cursorY += 14;
+    if (resolvedWindowId) {
+      const win = dbGet('SELECT start_datetime, end_datetime FROM shift_windows WHERE id = ? AND doctor_id = ?', [resolvedWindowId, doctor.id]);
+      if (win) {
+        doc.text(`Shift Window: ${formatDisplay(toDate(win.start_datetime))} - ${formatDisplay(toDate(win.end_datetime))}`, tableX, cursorY);
+      } else {
+        doc.text('Window: Selected Shift', tableX, cursorY);
+      }
+    } else {
+      doc.text('Window: Last 4 days', tableX, cursorY);
+    }
+    cursorY += 16;
+    doc.font('Helvetica-Bold').fontSize(10).fillColor('#111827').text(subtitle, tableX, cursorY);
+    cursorY += 16;
+  };
+
+  const drawTableHeader = () => {
+    doc.save();
+    doc.rect(tableX, cursorY, tableWidth, headerHeight).fill('#e5edf5');
+    doc.restore();
+    doc.strokeColor('#cbd5e1').lineWidth(0.8).rect(tableX, cursorY, tableWidth, headerHeight).stroke();
+    let x = tableX;
+    doc.font('Helvetica-Bold').fontSize(8.5).fillColor('#1f2937');
+    columns.forEach((col, idx) => {
+      doc.text(col.label, x + 3, cursorY + 6, {
+        width: col.width - 6,
+        align: idx >= 9 ? 'center' : 'left',
+        lineBreak: false,
+      });
+      if (idx < columns.length - 1) {
+        doc.moveTo(x + col.width, cursorY).lineTo(x + col.width, cursorY + headerHeight).stroke('#cbd5e1');
+      }
+      x += col.width;
+    });
+    cursorY += headerHeight;
+  };
+
+  const drawRow = (row, isAlt) => {
+    if (isAlt) {
+      doc.save();
+      doc.rect(tableX, cursorY, tableWidth, rowHeight).fill('#f8fafc');
+      doc.restore();
+    }
+    doc.strokeColor('#e2e8f0').lineWidth(0.6).rect(tableX, cursorY, tableWidth, rowHeight).stroke();
+    const values = {
+      patient_identifier: row.patient_identifier || '',
+      date_of_service: row.date_of_service || '',
+      diagnostic_code: row.diagnostic_code || '',
+      billing_code: row.billing_code || '',
+      number_of_calls: String(row.number_of_calls || ''),
+      encounter_number: String(row.encounter_number || ''),
+      modifier: row.modifier || '',
+      cmgp_modifier: row.cmgp_modifier || '',
+      bmi_modifier: row.bmi_modifier || '',
+      TEV: (row.aa_counts && row.aa_counts.TEV) || '',
+      TWK: (row.aa_counts && row.aa_counts.TWK) || '',
+      TNTP: (row.aa_counts && row.aa_counts.TNTP) || '',
+      TNTA: (row.aa_counts && row.aa_counts.TNTA) || '',
+      TST: (row.aa_counts && row.aa_counts.TST) || '',
+      TDES: (row.aa_counts && row.aa_counts.TDES) || '',
+    };
+    let x = tableX;
+    doc.font('Helvetica').fontSize(8).fillColor('#0f172a');
+    columns.forEach((col, idx) => {
+      const align = idx >= 9 ? 'center' : 'left';
+      doc.text(String(values[col.key] || ''), x + 3, cursorY + 5, {
+        width: col.width - 6,
+        align,
+        ellipsis: true,
+        lineBreak: false,
+      });
+      if (idx < columns.length - 1) {
+        doc.moveTo(x + col.width, cursorY).lineTo(x + col.width, cursorY + rowHeight).stroke('#e2e8f0');
+      }
+      x += col.width;
+    });
+    cursorY += rowHeight;
+  };
+
+  if (!summaryTables.length) {
+    drawPageTop('No summary entries');
+    doc.font('Helvetica-Oblique').fontSize(11).fillColor('#334155').text('No summary entries for this doctor.', tableX, cursorY + 8);
+    doc.end();
+    return;
+  }
+
+  summaryTables.forEach((table, tableIdx) => {
+    if (tableIdx > 0) {
+      doc.addPage();
+    }
+    const subtitle = `Dr. ${table.doctor ? table.doctor.name : 'Unknown'} - ${table.shift_date || '-'} - ${table.shift_day || '-'} - ${table.shift_type || '-'} Shift`;
+    drawPageTop(subtitle);
+    drawTableHeader();
+
+    if (!table.rows || !table.rows.length) {
+      doc.font('Helvetica-Oblique').fontSize(10).fillColor('#334155').text('No summary entries for this doctor yet.', tableX, cursorY + 8);
+      return;
+    }
+
+    table.rows.forEach((row, rowIdx) => {
+      if (cursorY + rowHeight > usableBottom) {
+        doc.addPage();
+        drawPageTop(subtitle);
+        drawTableHeader();
+      }
+      drawRow(row, rowIdx % 2 === 1);
+    });
+  });
+
+  doc.end();
 });
 
 router.post('/optimization/:pid/confirm', requireLogin, (req, res) => {

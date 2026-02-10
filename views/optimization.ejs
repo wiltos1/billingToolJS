@@ -118,17 +118,6 @@
                 <h3 style="margin:0;">Suggested Optimized Billing</h3>
                 <p class="muted" style="margin:6px 0 0;">Patient #<%= selected_patient.id %> &mdash; <%= selected_patient.initials %> / <%= selected_patient.identifier %></p>
             </div>
-            <% if (!optimization_error && recommendations.length) { %>
-            <form action="/patients/<%= selected_patient.id %>/confirmed_pdf" method="get" style="margin:0;">
-                <button type="submit" title="Download Optimized Billing PDF" aria-label="Download Optimized Billing PDF" style="display:inline-flex; align-items:center; justify-content:center; width:38px; height:38px; border-radius:999px; padding:0;">
-                    <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                        <path d="M19 18a4 4 0 0 0-1-7.87A6 6 0 1 0 6 15H5a3 3 0 0 0 0 6h11a3 3 0 0 0 3-3Z" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                        <path d="M12 7v8" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                        <path d="m8 11 4 4 4-4" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                    </svg>
-                </button>
-            </form>
-            <% } %>
         </div>
 
         <table>
@@ -217,6 +206,9 @@
     <% if (view_mode === 'doctor') { %>
     <div class="card">
         <strong>Billing Entry Summary</strong>
+        <% if (doctor_billings_locked) { %>
+        <p class="muted" style="margin-top:8px;">Doctor is not currently active on shift. Billing edits are locked until re-activated.</p>
+        <% } %>
         <% if (summary_tables && summary_tables.length) { %>
         <% summary_tables.forEach((table) => { %>
         <table style="margin-top:12px;">
@@ -254,9 +246,39 @@
             <tr>
                 <td><%= row.patient_identifier %></td>
                 <td><%= row.date_of_service %></td>
-                <td><%= row.diagnostic_code %></td>
+                <td>
+                    <% if (row.doctor_id && !doctor_billings_locked) { %>
+                    <form method="post" action="/optimization/diagnostic_code" style="display:flex; gap:6px; align-items:center;">
+                        <input type="hidden" name="doctor_id" value="<%= row.doctor_id %>">
+                        <input type="hidden" name="patient_id" value="<%= row.patient_id %>">
+                        <input type="hidden" name="patient_key" value="<%= row.patient_key %>">
+                        <input type="hidden" name="date_of_service" value="<%= row.date_of_service %>">
+                        <input type="hidden" name="billing_code" value="<%= row.billing_code %>">
+                        <input type="hidden" name="encounter_number" value="<%= row.encounter_number %>">
+                        <input type="text" name="diagnostic_code" inputmode="numeric" pattern="[0-9]{3}" maxlength="3" placeholder="001-999" value="<%= row.diagnostic_code || '' %>" style="width:78px;">
+                        <button type="submit" style="padding:4px 8px; font-size:0.8em;">Save</button>
+                    </form>
+                    <% } else { %>
+                    <%= row.diagnostic_code || '' %>
+                    <% } %>
+                </td>
                 <td><%= row.billing_code %></td>
-                <td><%= row.number_of_calls %></td>
+                <td>
+                    <% if (row.billing_code === '87.89B' && row.doctor_id && !doctor_billings_locked) { %>
+                    <form method="post" action="/optimization/number_of_calls" style="display:flex; gap:6px; align-items:center;">
+                        <input type="hidden" name="doctor_id" value="<%= row.doctor_id %>">
+                        <input type="hidden" name="patient_id" value="<%= row.patient_id %>">
+                        <input type="hidden" name="patient_key" value="<%= row.patient_key %>">
+                        <input type="hidden" name="date_of_service" value="<%= row.date_of_service %>">
+                        <input type="hidden" name="billing_code" value="<%= row.billing_code %>">
+                        <input type="hidden" name="encounter_number" value="<%= row.encounter_number %>">
+                        <input type="number" name="number_of_calls" min="1" max="99" step="1" value="<%= row.number_of_calls %>" style="width:70px;">
+                        <button type="submit" style="padding:4px 8px; font-size:0.8em;">Save</button>
+                    </form>
+                    <% } else { %>
+                    <%= row.number_of_calls %>
+                    <% } %>
+                </td>
                 <td><%= row.encounter_number %></td>
                 <td><%= row.modifier || '' %></td>
                 <td><%= row.cmgp_modifier || '' %></td>
@@ -295,12 +317,11 @@
 </body>
 <script>
     const confirmBtn = document.getElementById('confirm-archive-btn');
-    const dischargePresent = document.getElementById('discharge-present');
-    if (confirmBtn && dischargePresent) {
+    if (confirmBtn) {
         confirmBtn.addEventListener('click', (event) => {
-            if (dischargePresent.value !== '1') {
+            const proceed = window.confirm('Archive this patient now? This action is irreversible.');
+            if (!proceed) {
                 event.preventDefault();
-                alert('Please enter a discharge time before archiving this patient.');
             }
         });
     }

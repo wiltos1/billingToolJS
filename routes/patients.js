@@ -674,19 +674,16 @@ router.post('/patients/:pid/discharge', requireLogin, (req, res) => {
 
 router.post('/patients/:pid/restore', requireLogin, (req, res) => {
   const pid = parseInt(req.params.pid, 10);
-  const patient = dbGet('SELECT * FROM patients WHERE id = ?', [pid]);
-  if (patient && patient.status === 'discharged') {
-    dbRun('UPDATE patients SET status = ? WHERE id = ?', ['active', pid]);
-    dbRun('UPDATE shift_slots SET locked = 0 WHERE patient_id = ?', [pid]);
-    dbRun('DELETE FROM ghost_ja_locks WHERE patient_id = ?', [pid]);
-    dbRun('DELETE FROM confirmed_billings WHERE patient_id = ?', [pid]);
-  }
-  return res.redirect(`/?view=active&selected_patient=${pid}`);
+  return res.redirect(`/?view=archived&selected_patient=${pid}`);
 });
 
 router.post('/patients/:pid/delete', requireLogin, (req, res) => {
   const pid = parseInt(req.params.pid, 10);
   const view = req.body.view || 'active';
+  const patient = dbGet('SELECT * FROM patients WHERE id = ?', [pid]);
+  if (patient && patient.status === 'discharged') {
+    return res.redirect('/?view=archived');
+  }
   dbRun('DELETE FROM patients WHERE parent_patient_id = ?', [pid]);
   dbRun('DELETE FROM patients WHERE id = ?', [pid]);
   return res.redirect(`/?view=${view}`);
